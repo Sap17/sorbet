@@ -1,8 +1,10 @@
 #ifndef RUBY_TYPER_OPTIONS_H
 #define RUBY_TYPER_OPTIONS_H
+#include "common/ConstExprStr.h"
 #include "common/FileSystem.h"
 #include "common/common.h"
 #include "core/StrictLevel.h"
+#include "main/pipeline/semantic_extension/SemanticExtension.h"
 #include "spdlog/spdlog.h"
 
 namespace sorbet::realmain::options {
@@ -14,44 +16,101 @@ public:
     const int returnCode;
 };
 
+class PrinterConfig {
+public:
+    bool enabled = false;
+    std::string outputPath;
+    bool supportsFlush = false;
+
+    void print(const std::string_view &contents) const;
+    template <typename... Args> void fmt(const ConstExprStr msg, const Args &... args) const {
+        print(fmt::format(msg.str, args...));
+    }
+    void flush();
+
+    PrinterConfig();
+    PrinterConfig(const PrinterConfig &) = default;
+    PrinterConfig(PrinterConfig &&) = default;
+    PrinterConfig &operator=(const PrinterConfig &) = default;
+    PrinterConfig &operator=(PrinterConfig &&) = default;
+
+private:
+    struct GuardedState {
+        fmt::memory_buffer buf;
+        absl::Mutex mutex;
+    };
+    std::shared_ptr<GuardedState> state;
+};
+
 struct Printers {
-    bool ParseTree = false;
-    bool ParseTreeJSON = false;
-    bool Desugared = false;
-    bool DesugaredRaw = false;
-    bool DSLTree = false;
-    bool DSLTreeRaw = false;
-    bool NameTree = false;
-    bool NameTreeRaw = false;
-    bool SymbolTable = false;
-    bool SymbolTableRaw = false;
-    bool SymbolTableJson = false;
-    bool SymbolTableFull = false;
-    bool SymbolTableFullRaw = false;
-    bool FileTableJson = false;
-    bool ResolveTree = false;
-    bool ResolveTreeRaw = false;
-    bool MissingConstants = false;
-    bool CFG = false;
-    bool TypedSource = false;
-    bool Autogen = false;
-    bool AutogenMsgPack = false;
-    bool PluginGeneratedCode = false;
+    PrinterConfig ParseTree;
+    PrinterConfig ParseTreeJson;
+    PrinterConfig ParseTreeWhitequark;
+    PrinterConfig DesugarTree;
+    PrinterConfig DesugarTreeRaw;
+    PrinterConfig RewriterTree;
+    PrinterConfig RewriterTreeRaw;
+    PrinterConfig IndexTree;
+    PrinterConfig IndexTreeRaw;
+    PrinterConfig NameTree;
+    PrinterConfig NameTreeRaw;
+    PrinterConfig ResolveTree;
+    PrinterConfig ResolveTreeRaw;
+    PrinterConfig FlattenTree;
+    PrinterConfig FlattenTreeRaw;
+    PrinterConfig AST;
+    PrinterConfig ASTRaw;
+    PrinterConfig CFG;
+    PrinterConfig CFGRaw;
+    PrinterConfig TypedSource;
+    PrinterConfig SymbolTable;
+    PrinterConfig SymbolTableRaw;
+    PrinterConfig SymbolTableJson;
+    PrinterConfig SymbolTableFull;
+    PrinterConfig SymbolTableFullRaw;
+    PrinterConfig SymbolTableFullJson;
+    PrinterConfig FileTableJson;
+    PrinterConfig MissingConstants;
+    PrinterConfig PluginGeneratedCode;
+    PrinterConfig Autogen;
+    PrinterConfig AutogenMsgPack;
+    PrinterConfig AutogenClasslist;
+    PrinterConfig AutogenAutoloader;
+    PrinterConfig AutogenSubclasses;
+    // Ensure everything here is in PrinterConfig::printers().
+
+    std::vector<std::reference_wrapper<PrinterConfig>> printers();
+    bool isAutogen() const;
 };
 
 enum Phase {
     INIT,
     PARSER,
     DESUGARER,
-    DSL,
+    REWRITER,
+    LOCAL_VARS,
     NAMER,
     RESOLVER,
     CFG,
     INFERENCER,
 };
 
+struct AutoloaderConfig {
+    // Top-level modules to include in autoloader output
+    std::vector<std::string> modules;
+    std::string rootDir;
+    std::string preamble;
+    std::vector<std::string> requireExcludes;
+    std::vector<std::vector<std::string>> sameFileModules;
+    std::vector<std::string> stripPrefixes;
+
+    std::vector<std::string> absoluteIgnorePatterns;
+    std::vector<std::string> relativeIgnorePatterns;
+};
+
 struct Options {
     Printers print;
+    AutoloaderConfig autoloaderConfig;
     Phase stopAfterPhase = Phase::INFERENCER;
     bool noStdlib = false;
 
@@ -70,16 +129,19 @@ struct Options {
     bool supressNonCriticalErrors = false;
     bool runLSP = false;
     bool disableWatchman = false;
-    std::string watchmanPath;
+    std::string watchmanPath = "watchman";
     bool stressIncrementalResolver = false;
+    bool sleepInSlowPath = false;
     bool noErrorCount = false;
     bool autocorrect = false;
     bool waitForDebugger = false;
-    bool skipDSLPasses = false;
+    bool skipRewriterPasses = false;
     bool suggestRuntimeProfiledType = false;
+    bool censorForSnapshotTests = false;
     int threads = 0;
     int logLevel = 0; // number of time -v was passed
     int autogenVersion = 0;
+    bool stripeMode = false;
     std::string typedSource = "";
     std::string cacheDir = "";
     std::vector<std::string> configatronDirs;
@@ -90,22 +152,23 @@ struct Options {
     std::string storeState = "";
     bool enableCounters = false;
     std::vector<std::string> someCounters;
-    std::vector<int> errorCodeWhiteList;
-    std::vector<int> errorCodeBlackList;
+    std::string errorUrlBase = "https://srb.help/";
+    std::set<int> errorCodeWhiteList;
+    std::set<int> errorCodeBlackList;
     /** Prefix to remove from all printed paths. */
     std::string pathPrefix;
 
-    u4 reserveMemKiB;
+    u4 reserveMemKiB = 0;
 
     std::string statsdHost;
-    std::string statsdPrefix;
-    int statsdPort;
+    std::string statsdPrefix = "ruby_typer.unknown";
+    int statsdPort = 8200;
 
     std::string metricsFile;
-    std::string metricsRepo;
-    std::string metricsPrefix;
-    std::string metricsBranch;
-    std::string metricsSha;
+    std::string metricsRepo = "none";
+    std::string metricsPrefix = "ruby_typer.unknown.";
+    std::string metricsBranch = "none";
+    std::string metricsSha = "none";
 
     // Contains the file names passed in to Sorbet.
     std::vector<std::string> rawInputFileNames;
@@ -117,14 +180,23 @@ struct Options {
     std::vector<std::string> relativeIgnorePatterns;
     // Contains the expanded list of all Ruby file inputs (rawInputFileNames + all Ruby files in rawInputDirNames)
     std::vector<std::string> inputFileNames;
+    // A list of parent classes to be used in `-p autogen-subclasses`
+    std::vector<std::string> autogenSubclassesParents;
+    // Ignore patterns beginning from the root of an input folder.
+    std::vector<std::string> autogenSubclassesAbsoluteIgnorePatterns;
+    // Ignore patterns that can occur anywhere in a file's path from an input folder.
+    std::vector<std::string> autogenSubclassesRelativeIgnorePatterns;
+    // List of directories not available editor-side. References to files in these directories should be sent via
+    // sorbet: URIs to clients that support them.
+    std::vector<std::string> lspDirsMissingFromClient;
+    // Enable stable-but-not-yet-shipped features suitable for late-stage beta-testing.
+    bool lspAllBetaFeaturesEnabled = false;
     // Booleans enabling various experimental LSP features. Each will be removed once corresponding feature stabilizes.
-    bool lspGoToDefinitionEnabled;
-    bool lspFindReferencesEnabled;
-    bool lspAutocompleteEnabled;
-    bool lspWorkspaceSymbolsEnabled;
-    bool lspDocumentSymbolEnabled;
-    bool lspSignatureHelpEnabled;
-    bool lspHoverEnabled;
+    bool lspAutocompleteEnabled = false;
+    bool lspQuickFixEnabled = false;
+    bool lspDocumentHighlightEnabled = false;
+    bool lspDocumentSymbolEnabled = false;
+    bool lspSignatureHelpEnabled = false;
 
     std::string inlineInput; // passed via -e
     std::string debugLogFile;
@@ -132,18 +204,25 @@ struct Options {
 
     std::shared_ptr<FileSystem> fs = std::make_shared<OSFileSystem>();
 
+    void flushPrinters();
+
     Options() = default;
 
     Options(const Options &) = delete;
 
     Options(Options &&) = default;
 
-    const Options &operator=(const Options &) = delete;
+    Options &operator=(const Options &) = delete;
 
-    const Options &operator=(Options &&) = delete;
+    Options &operator=(Options &&) = delete;
 };
 
-void readOptions(Options &, int argc, char *argv[],
-                 std::shared_ptr<spdlog::logger> logger) noexcept(false); // throw(EarlyReturnWithCode);
+void readOptions(
+    Options &, std::vector<std::unique_ptr<pipeline::semantic_extension::SemanticExtension>> &configuredExtensions,
+    int argc, char *argv[],
+    const std::vector<pipeline::semantic_extension::SemanticExtensionProvider *> &semanticExtensionProviders,
+    std::shared_ptr<spdlog::logger> logger) noexcept(false); // throw(EarlyReturnWithCode);
+
+void flushPrinters(Options &);
 } // namespace sorbet::realmain::options
 #endif // RUBY_TYPER_OPTIONS_H

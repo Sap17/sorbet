@@ -1,3 +1,4 @@
+#include "core/ErrorQueue.h"
 #include "core/Unfreeze.h"
 #include "main/pipeline/pipeline.h"
 #include "payload/payload.h"
@@ -12,15 +13,17 @@ namespace spd = spdlog;
 auto logger = spdlog::stdout_logger_mt("console");
 auto typeErrorsConsole = spdlog::stdout_logger_mt("typeErrorsConsole");
 
-const realmain::options::Options opts = [] {
+realmain::options::Options createDefaultOptions(bool stressIncrementalResolver) {
     realmain::options::Options opts;
+    opts.stressIncrementalResolver = stressIncrementalResolver;
     // you can set up options here
     return opts;
-}();
+};
+
+unique_ptr<const realmain::options::Options> opts =
+    make_unique<const realmain::options::Options>(createDefaultOptions(false));
 
 unique_ptr<KeyValueStore> kvstore;
-
-bool stressIncrementalResolver = false;
 
 unique_ptr<core::GlobalState> buildInitialGlobalState() {
     typeErrorsConsole->set_level(spd::level::critical);
@@ -30,7 +33,7 @@ unique_ptr<core::GlobalState> buildInitialGlobalState() {
 
     logger->trace("Doing on-start initialization");
 
-    payload::createInitialGlobalState(gs, logger, opts, kvstore);
+    payload::createInitialGlobalState(gs, *opts, kvstore);
     return gs;
 }
 
@@ -41,11 +44,11 @@ extern "C" int LLVMFuzzerInitialize(int *argc, char ***argv) {
     // thus we do it manually
     for (int i = 0; i < *argc; i++) {
         if (string((*argv)[i]) == "--stress-incremental-resolver") {
-            stressIncrementalResolver = true;
+            opts = make_unique<const realmain::options::Options>(createDefaultOptions(true));
         }
     }
 
-    if (stressIncrementalResolver) {
+    if (opts->stressIncrementalResolver) {
         logger->critical("Enabling incremental resolver");
     }
     return 0;
@@ -53,7 +56,7 @@ extern "C" int LLVMFuzzerInitialize(int *argc, char ***argv) {
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     static const unique_ptr<core::GlobalState> commonGs = buildInitialGlobalState();
-    static WorkerPool workers(0, logger);
+    static unique_ptr<WorkerPool> workers = WorkerPool::create(0, *logger);
     commonGs->trace("starting run");
     unique_ptr<core::GlobalState> gs;
     { gs = commonGs->deepCopy(true); }
@@ -64,21 +67,11 @@ extern "C" int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         core::UnfreezeFileTable fileTableAccess(*gs);
         auto file = gs->enterFile(string("fuzz.rb"), inputData);
         inputFiles.emplace_back(file);
-        file.data(*gs).strictLevel = core::StrictLevel::Typed;
+        file.data(*gs).strictLevel = core::StrictLevel::True;
     }
 
-    indexed = realmain::pipeline::index(gs, {}, inputFiles, opts, workers, kvstore, logger);
-    indexed = realmain::pipeline::resolve(*gs, move(indexed), opts, logger);
-    if (stressIncrementalResolver) {
-        for (auto &f : indexed) {
-            auto reIndexed = realmain::pipeline::indexOne(opts, *gs, f.file, kvstore, logger);
-            vector<ast::ParsedFile> toBeReResolved;
-            toBeReResolved.emplace_back(move(reIndexed));
-            auto reresolved = realmain::pipeline::incrementalResolve(*gs, move(toBeReResolved), opts, logger);
-            ENFORCE(reresolved.size() == 1);
-            f = move(reresolved[0]);
-        }
-    }
-    indexed = realmain::pipeline::typecheck(gs, move(indexed), opts, workers, logger);
+    indexed = realmain::pipeline::index(gs, inputFiles, *opts, *workers, kvstore);
+    indexed = move(realmain::pipeline::resolve(gs, move(indexed), *opts, *workers).result());
+    indexed = move(realmain::pipeline::typecheck(gs, move(indexed), *opts, *workers).result());
     return 0;
 }

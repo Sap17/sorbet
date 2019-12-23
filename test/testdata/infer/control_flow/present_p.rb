@@ -46,8 +46,14 @@ class A
     nil
   end
 
-  def unreachable()
+  def unreachable_nil()
     if nil.present?
+      "foo" # error: This code is unreachable
+    end
+  end
+
+  def unreachable_false()
+    if false.present?
       "foo" # error: This code is unreachable
     end
   end

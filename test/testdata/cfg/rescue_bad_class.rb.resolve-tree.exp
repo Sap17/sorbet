@@ -1,7 +1,0 @@
-class <emptyTree><<C <U <root>>>> < ()
-  def <U foo><<U foo>>(<blk>)
-    <emptyTree>
-  rescue Unresolved: <emptyTree>::<C <U NotAClass>> => <U e>
-    <emptyTree>
-  end
-end

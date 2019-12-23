@@ -18,22 +18,24 @@ void addSignatureHelpItem(const core::GlobalState &gs, core::SymbolRef method,
     vector<unique_ptr<ParameterInformation>> parameters;
     // Documentation is set to be a markdown element that highlights which parameter you are currently typing in.
     string methodDocumentation = "(";
-    auto args = method.data(gs)->arguments();
+    auto &args = method.data(gs)->arguments();
     int i = 0;
-    for (auto arg : args) {
+    for (const auto &arg : args) {
         // label field is populated with the name of the variable.
         // Not sure why VSCode does not display this for now.
-        auto parameter = make_unique<ParameterInformation>(arg.data(gs)->argumentName(gs));
+        auto parameter = make_unique<ParameterInformation>(arg.argumentName(gs));
         if (i == activeParameter) {
             // this bolds the active parameter in markdown
-            methodDocumentation += "**_" + arg.data(gs)->argumentName(gs) + "_**";
+            methodDocumentation += "**_" + arg.argumentName(gs) + "_**";
         } else {
-            methodDocumentation += arg.data(gs)->argumentName(gs);
+            methodDocumentation += arg.argumentName(gs);
         }
         if (i != args.size() - 1) {
             methodDocumentation += ", ";
         }
-        parameter->documentation = getResultType(gs, arg, resp.receiver.type, resp.constraint)->show(gs);
+        parameter->documentation = getResultType(gs, arg.type, method, resp.dispatchResult->main.receiver,
+                                                 resp.dispatchResult->main.constr.get())
+                                       ->show(gs);
         parameters.push_back(move(parameter));
         i += 1;
     }
@@ -45,23 +47,26 @@ void addSignatureHelpItem(const core::GlobalState &gs, core::SymbolRef method,
     sigs.push_back(move(sig));
 }
 
-unique_ptr<core::GlobalState> LSPLoop::handleTextSignatureHelp(unique_ptr<core::GlobalState> gs, const MessageId &id,
-                                                               const TextDocumentPositionParams &params) {
-    ResponseMessage response("2.0", id, LSPMethod::TextDocumentSignatureHelp);
-    if (!opts.lspSignatureHelpEnabled) {
-        response.error =
+unique_ptr<ResponseMessage> LSPLoop::handleTextSignatureHelp(LSPTypechecker &typechecker, const MessageId &id,
+                                                             const TextDocumentPositionParams &params) const {
+    auto response = make_unique<ResponseMessage>("2.0", id, LSPMethod::TextDocumentSignatureHelp);
+    if (!config->opts.lspSignatureHelpEnabled) {
+        response->error =
             make_unique<ResponseError>((int)LSPErrorCodes::InvalidRequest,
                                        "The `Signature Help` LSP feature is experimental and disabled by default.");
-        sendResponse(response);
-        return gs;
+        return response;
     }
 
     prodCategoryCounterInc("lsp.messages.processed", "textDocument.signatureHelp");
-    auto result = setupLSPQueryByLoc(move(gs), params.textDocument->uri, *params.position,
-                                     LSPMethod::TextDocumentSignatureHelp, false);
-    if (auto run = get_if<TypecheckRun>(&result)) {
-        auto finalGs = move(run->gs);
-        auto &queryResponses = run->responses;
+
+    const core::GlobalState &gs = typechecker.state();
+    auto result =
+        queryByLoc(typechecker, params.textDocument->uri, *params.position, LSPMethod::TextDocumentSignatureHelp);
+    if (result.error) {
+        // An error happened while setting up the query.
+        response->error = move(result.error);
+    } else {
+        auto &queryResponses = result.responses;
         int activeParameter = -1;
         vector<unique_ptr<SignatureInformation>> signatures;
         if (!queryResponses.empty()) {
@@ -70,42 +75,32 @@ unique_ptr<core::GlobalState> LSPLoop::handleTextSignatureHelp(unique_ptr<core::
             if (auto sendResp = resp->isSend()) {
                 auto sendLocIndex = sendResp->termLoc.beginPos();
 
-                auto fref = uri2FileRef(params.textDocument->uri);
+                auto fref = config->uri2FileRef(gs, params.textDocument->uri);
                 if (!fref.exists()) {
-                    return finalGs;
+                    response->error =
+                        make_unique<ResponseError>((int)LSPErrorCodes::InvalidRequest,
+                                                   fmt::format("Unknown file: `{}`", params.textDocument->uri));
+                    return response;
                 }
-                auto src = fref.data(*finalGs).source();
-                auto loc = lspPos2Loc(fref, *params.position, *finalGs);
-                if (!loc) {
-                    return finalGs;
-                }
-                string_view call_str = src.substr(sendLocIndex, loc->endPos() - sendLocIndex);
+                auto src = fref.data(gs).source();
+                auto loc = config->lspPos2Loc(fref, *params.position, gs);
+                string_view call_str = src.substr(sendLocIndex, loc.endPos() - sendLocIndex);
                 int numberCommas = absl::c_count(call_str, ',');
                 // Active parameter depends on number of ,'s in the current string being typed. (0 , = first arg, 1 , =
                 // 2nd arg)
                 activeParameter = numberCommas;
 
-                auto firstDispatchComponentMethod = sendResp->dispatchComponents.front().method;
+                auto firstDispatchComponentMethod = sendResp->dispatchResult->main.method;
 
-                addSignatureHelpItem(*finalGs, firstDispatchComponentMethod, signatures, *sendResp, numberCommas);
+                addSignatureHelpItem(gs, firstDispatchComponentMethod, signatures, *sendResp, numberCommas);
             }
         }
         auto result = make_unique<SignatureHelp>(move(signatures));
         if (activeParameter != -1) {
             result->activeParameter = activeParameter;
         }
-        response.result = move(result);
-        sendResponse(response);
-        return finalGs;
-    } else if (auto error = get_if<pair<unique_ptr<ResponseError>, unique_ptr<core::GlobalState>>>(&result)) {
-        // An error happened while setting up the query.
-        response.error = move(error->first);
-        sendResponse(response);
-        return move(error->second);
-    } else {
-        // Should never happen, but satisfy the compiler.
-        ENFORCE(false, "Internal error: setupLSPQueryByLoc returned invalid value.");
-        return nullptr;
+        response->result = move(result);
     }
+    return response;
 }
 } // namespace sorbet::realmain::lsp

@@ -38,13 +38,13 @@ class TestArgs
   def call_kwarg
     # "too many arguments" and "missing keyword argument b"
     kwarg(1, 2) # error: Missing required keyword argument `b` for method `TestArgs#kwarg`
-  # ^^^^^^^^^^^ error: Too many arguments provided for method `TestArgs#kwarg`. Expected: `1`, got: `2`
+  # ^^^^^^^^^^^ error: Too many positional arguments provided for method `TestArgs#kwarg`. Expected: `1`, got: `2`
     kwarg(1) # error: Missing required keyword argument `b`
 
     kwarg(1, b: 2)
     kwarg(1, b: 2, c: 3) # error: Unrecognized keyword argument `c`
     kwarg(1, {}) # error: Missing required keyword argument `b`
-    kwarg(1, b: "hi") # error: `String("hi")` doesn't match `Integer` for argument `b`
+    kwarg(1, b: "hi") # error: Expected `Integer` but found `String("hi")` for argument `b`
     kwarg(1, any)
     kwarg(1, a_hash) # error: Passing a hash where the specific keys are unknown
   end
@@ -61,11 +61,11 @@ class TestArgs
   def call_repeated
     repeated
     repeated(1, 2, 3)
-    repeated(1, "hi") # error: `String("hi")` doesn't match `Integer` for argument `x`
+    repeated(1, "hi") # error: Expected `Integer` but found `String("hi")` for argument `x`
 
     # We error on each incorrect argument
-    repeated("hi", "there") # error: `String("hi")` doesn't match `Integer` for argument `x`
-  # ^^^^^^^^^^^^^^^^^^^^^^^ error: `String("there")` doesn't match `Integer` for argument `x`
+    repeated("hi", "there") # error: Expected `Integer` but found `String("hi")` for argument `x`
+  # ^^^^^^^^^^^^^^^^^^^^^^^ error: Expected `Integer` but found `String("there")` for argument `x`
   end
 
   sig do
@@ -97,6 +97,6 @@ class TestArgs
     # missing; We follow Ruby in complaining about `u`.
     optkw(u: 1) # error: Missing required keyword argument `u`
     optkw(1, 2, 3) # error: Missing required keyword argument `u` for method `TestArgs#optkw`
-  # ^^^^^^^^^^^^^^ error: Too many arguments provided for method `TestArgs#optkw`. Expected: `1..2`, got: `3`
+  # ^^^^^^^^^^^^^^ error: Too many positional arguments provided for method `TestArgs#optkw`. Expected: `1..2`, got: `3`
   end
 end

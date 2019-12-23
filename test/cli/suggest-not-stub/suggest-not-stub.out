@@ -1,14 +1,22 @@
-test/cli/suggest-not-stub/suggest-not-stub.rb:3: Unable to resolve constant `B` http://go/e/5002
+test/cli/suggest-not-stub/suggest-not-stub.rb:3: Unable to resolve constant `B` https://srb.help/5002
      3 |  B
           ^
 
-test/cli/suggest-not-stub/suggest-not-stub.rb:6: Unable to resolve constant `B` http://go/e/5002
+test/cli/suggest-not-stub/suggest-not-stub.rb:6: Unable to resolve constant `B` https://srb.help/5002
+     6 |B
+        ^
+  Autocorrect: Use `-a` to autocorrect
+    test/cli/suggest-not-stub/suggest-not-stub.rb:6: Replace with `A`
+     6 |B
+        ^
+  Autocorrect: Use `-a` to autocorrect
+    test/cli/suggest-not-stub/suggest-not-stub.rb:6: Replace with `T`
      6 |B
         ^
     test/cli/suggest-not-stub/suggest-not-stub.rb:2: Did you mean: `A`?
      2 |class A
         ^^^^^^^
-    https://github.com/stripe/sorbet/tree/master/rbi/t.rbi#L10: Did you mean: `T`?
-    10 |module T
+    https://github.com/sorbet/sorbet/tree/master/rbi/sorbet/t.rbi#L16: Did you mean: `T`?
+    16 |module T
         ^^^^^^^^
 Errors: 2

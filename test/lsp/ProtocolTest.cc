@@ -1,84 +1,52 @@
 #include "test/lsp/ProtocolTest.h"
+#include "test/helpers/MockFileSystem.h"
 #include "test/helpers/lsp.h"
 #include "test/helpers/position_assertions.h"
 
 namespace sorbet::test::lsp {
 using namespace std;
 
-MockFileSystem::MockFileSystem(std::string_view rootPath) : rootPath(string(rootPath)) {}
-
-string makeAbsolute(string_view rootPath, string_view path) {
-    if (path[0] == '/') {
-        return string(path);
-    } else {
-        return fmt::format("{}/{}", rootPath, path);
-    }
+namespace {
+bool isSorbetFence(const LSPMessage &msg) {
+    return msg.isNotification() && msg.method() == LSPMethod::SorbetFence;
 }
 
-void MockFileSystem::writeFiles(const vector<pair<string, string>> &initialFiles) {
-    for (auto &pair : initialFiles) {
-        writeFile(pair.first, pair.second);
-    }
+bool isTypecheckRun(const LSPMessage &msg) {
+    return msg.isNotification() && msg.method() == LSPMethod::SorbetTypecheckRunInfo;
 }
-
-string MockFileSystem::readFile(string_view path) const {
-    auto file = contents.find(makeAbsolute(rootPath, path));
-    if (file == contents.end()) {
-        throw FileNotFoundException();
-    } else {
-        return file->second;
-    }
-}
-
-void MockFileSystem::writeFile(string_view filename, string_view text) {
-    contents[makeAbsolute(rootPath, filename)] = text;
-}
-
-void MockFileSystem::deleteFile(string_view filename) {
-    auto file = contents.find(makeAbsolute(rootPath, filename));
-    if (file == contents.end()) {
-        throw FileNotFoundException();
-    } else {
-        contents.erase(file);
-    }
-}
-
-vector<string> MockFileSystem::listFilesInDir(string_view path, UnorderedSet<string> extensions, bool recursive,
-                                              const std::vector<std::string> &absoluteIgnorePatterns,
-                                              const std::vector<std::string> &relativeIgnorePatterns) const {
-    Exception::raise("Not implemented.");
-}
+} // namespace
 
 void ProtocolTest::SetUp() {
     rootPath = "/Users/jvilk/stripe/pay-server";
     rootUri = fmt::format("file://{}", rootPath);
     fs = make_shared<MockFileSystem>(rootPath);
-    // Always use fast path
-    // TODO: Make toggleable so we can run slow path tests?
-    bool disableFastPath = false;
-    lspWrapper = make_unique<LSPWrapper>(rootPath, disableFastPath);
-    lspWrapper->opts.fs = fs;
+    bool useMultithreading = GetParam();
+    auto opts = make_shared<realmain::options::Options>();
+    opts->disableWatchman = true;
+    if (useMultithreading) {
+        lspWrapper = MultiThreadedLSPWrapper::create(rootPath, opts);
+    } else {
+        lspWrapper = SingleThreadedLSPWrapper::create(rootPath, opts);
+    }
+    lspWrapper->opts->fs = fs;
     lspWrapper->enableAllExperimentalFeatures();
 }
 
-vector<unique_ptr<LSPMessage>> ProtocolTest::initializeLSP() {
-    auto responses = sorbet::test::initializeLSP(rootPath, rootUri, *lspWrapper, nextId);
+vector<unique_ptr<LSPMessage>> ProtocolTest::initializeLSP(bool supportsMarkdown,
+                                                           optional<unique_ptr<SorbetInitializationOptions>> opts) {
+    auto responses = sorbet::test::initializeLSP(rootPath, rootUri, *lspWrapper, nextId, supportsMarkdown, move(opts));
     updateDiagnostics(responses);
     return responses;
 }
 
 string ProtocolTest::getUri(string_view filePath) {
-    return filePathToUri(rootUri, filePath);
+    return filePathToUri(lspWrapper->config(), filePath);
 }
 
 unique_ptr<LSPMessage> ProtocolTest::openFile(string_view path, string_view contents) {
     sourceFileContents[string(path)] =
         make_shared<core::File>(string(path), string(contents), core::File::Type::Normal);
-    auto uri = getUri(path);
-    auto didOpenParams =
-        make_unique<DidOpenTextDocumentParams>(make_unique<TextDocumentItem>(uri, "ruby", 1, string(contents)));
-    auto didOpenNotif = make_unique<NotificationMessage>("2.0", LSPMethod::TextDocumentDidOpen, move(didOpenParams));
-    return make_unique<LSPMessage>(move(didOpenNotif));
+    return makeOpen(getUri(path), contents, 1);
 }
 
 unique_ptr<LSPMessage> ProtocolTest::closeFile(string_view path) {
@@ -92,30 +60,24 @@ unique_ptr<LSPMessage> ProtocolTest::closeFile(string_view path) {
             sourceFileContents.erase(it);
         }
     }
-
-    auto uri = getUri(path);
-    auto didCloseParams = make_unique<DidCloseTextDocumentParams>(make_unique<TextDocumentIdentifier>(uri));
-    auto didCloseNotif = make_unique<NotificationMessage>("2.0", LSPMethod::TextDocumentDidClose, move(didCloseParams));
-    return make_unique<LSPMessage>(move(didCloseNotif));
+    return makeClose(getUri(path));
 }
 
-unique_ptr<LSPMessage> ProtocolTest::changeFile(string_view path, string_view newContents, int version) {
+unique_ptr<LSPMessage> ProtocolTest::changeFile(string_view path, string_view newContents, int version,
+                                                bool cancellationExpected) {
     sourceFileContents[string(path)] =
         make_shared<core::File>(string(path), string(newContents), core::File::Type::Normal);
-    auto uri = getUri(path);
-    auto textDocIdent = make_unique<VersionedTextDocumentIdentifier>(uri, version);
-    vector<unique_ptr<TextDocumentContentChangeEvent>> changeEvents;
-    changeEvents.push_back(make_unique<TextDocumentContentChangeEvent>(string(newContents)));
-    auto didChangeParams = make_unique<DidChangeTextDocumentParams>(move(textDocIdent), move(changeEvents));
-    auto didChangeNotif =
-        make_unique<NotificationMessage>("2.0", LSPMethod::TextDocumentDidChange, move(didChangeParams));
-    return make_unique<LSPMessage>(move(didChangeNotif));
+    return makeChange(getUri(path), newContents, version, cancellationExpected);
 }
 
 unique_ptr<LSPMessage> ProtocolTest::documentSymbol(string_view path) {
     auto docSymParams = make_unique<DocumentSymbolParams>(make_unique<TextDocumentIdentifier>(getUri(path)));
     auto req = make_unique<RequestMessage>("2.0", nextId++, LSPMethod::TextDocumentDocumentSymbol, move(docSymParams));
     return make_unique<LSPMessage>(move(req));
+}
+
+unique_ptr<LSPMessage> ProtocolTest::workspaceSymbol(string_view query) {
+    return makeWorkspaceSymbolRequest(nextId++, query);
 }
 
 unique_ptr<LSPMessage> ProtocolTest::getDefinition(string_view path, int line, int character) {
@@ -149,8 +111,17 @@ unique_ptr<LSPMessage> ProtocolTest::cancelRequest(int id) {
         make_unique<NotificationMessage>("2.0", LSPMethod::$CancelRequest, make_unique<CancelParams>(id)));
 }
 
+// Verify that messages are sound (contains proper JSON shape for method type) by serializing and re-parsing them.
+vector<unique_ptr<LSPMessage>> verify(const vector<unique_ptr<LSPMessage>> &msgs) {
+    vector<unique_ptr<LSPMessage>> reparsedMessages;
+    for (auto &msg : msgs) {
+        reparsedMessages.push_back(LSPMessage::fromClient(msg->toJSON()));
+    }
+    return reparsedMessages;
+}
+
 std::vector<std::unique_ptr<LSPMessage>> ProtocolTest::sendRaw(const std::string &json) {
-    auto responses = lspWrapper->getLSPResponsesFor(json);
+    auto responses = verify(getLSPResponsesFor(*lspWrapper, LSPMessage::fromClient(json)));
     updateDiagnostics(responses);
     return responses;
 }
@@ -161,34 +132,81 @@ vector<unique_ptr<LSPMessage>> ProtocolTest::send(const LSPMessage &message) {
 }
 
 vector<unique_ptr<LSPMessage>> ProtocolTest::send(vector<unique_ptr<LSPMessage>> messages) {
-    // Verify that messages are sound (contains proper JSON shape for method type) by serializing and re-parsing them.
-    vector<unique_ptr<LSPMessage>> reparsedMessages;
-    for (auto &m : messages) {
-        reparsedMessages.push_back(LSPMessage::fromClient(m->toJSON()));
-    }
-    auto responses = lspWrapper->getLSPResponsesFor(reparsedMessages);
+    vector<unique_ptr<LSPMessage>> reparsedMessages = verify(messages);
+    auto responses = verify(getLSPResponsesFor(*lspWrapper, move(reparsedMessages)));
     updateDiagnostics(responses);
     return responses;
 }
 
-void ProtocolTest::updateDiagnostics(const vector<unique_ptr<LSPMessage>> &messages) {
-    for (auto &msg : messages) {
-        if (msg->isNotification() && msg->method() == LSPMethod::TextDocumentPublishDiagnostics) {
-            if (auto diagnosticParams = getPublishDiagnosticParams(msg->asNotification())) {
-                // Will explicitly overwrite older diagnostics that are irrelevant.
-                // TODO: Have a better way of copying.
-                diagnostics[uriToFilePath(rootUri, (*diagnosticParams)->uri)] =
-                    move(PublishDiagnosticsParams::fromJSON((*diagnosticParams)->toJSON())->diagnostics);
+void ProtocolTest::sendAsyncRaw(const string &json) {
+    auto &wrapper = dynamic_cast<MultiThreadedLSPWrapper &>(*lspWrapper);
+    wrapper.send(json);
+}
+
+void ProtocolTest::sendAsync(const LSPMessage &message) {
+    sendAsyncRaw(message.toJSON());
+}
+
+unique_ptr<LSPMessage> ProtocolTest::readAsync() {
+    auto &wrapper = dynamic_cast<MultiThreadedLSPWrapper &>(*lspWrapper);
+    auto msg = wrapper.read(20000);
+    if (msg) {
+        updateDiagnostics(*msg);
+    } else {
+        ADD_FAILURE() << "Timeout waiting for LSP response.";
+    }
+    return msg;
+}
+
+void ProtocolTest::updateDiagnostics(const LSPMessage &msg) {
+    if (msg.isNotification() && msg.method() == LSPMethod::TextDocumentPublishDiagnostics) {
+        if (auto diagnosticParams = getPublishDiagnosticParams(msg.asNotification())) {
+            // Will explicitly overwrite older diagnostics that are irrelevant.
+            vector<unique_ptr<Diagnostic>> diagnostics;
+            for (const auto &d : (*diagnosticParams)->diagnostics) {
+                diagnostics.push_back(d->copy());
             }
+            this->diagnostics[uriToFilePath(lspWrapper->config(), (*diagnosticParams)->uri)] = move(diagnostics);
         }
     }
 }
 
+void ProtocolTest::updateDiagnostics(const vector<unique_ptr<LSPMessage>> &messages) {
+    for (auto &msg : messages) {
+        updateDiagnostics(*msg);
+    }
+}
+
+std::string ProtocolTest::readFile(std::string_view uri) {
+    auto readFileResponses = send(LSPMessage(make_unique<RequestMessage>(
+        "2.0", nextId++, LSPMethod::SorbetReadFile, make_unique<TextDocumentIdentifier>(string(uri)))));
+    EXPECT_EQ(readFileResponses.size(), 1);
+    if (readFileResponses.size() == 1) {
+        auto &readFileResponse = readFileResponses.at(0);
+        EXPECT_TRUE(readFileResponse->isResponse());
+        auto &readFileResult = get<unique_ptr<TextDocumentItem>>(*readFileResponse->asResponse().result);
+        return readFileResult->text;
+    }
+    return "";
+}
+
+vector<unique_ptr<Location>> ProtocolTest::getDefinitions(std::string_view uri, int line, int character) {
+    auto defResponses = send(*getDefinition(uri, line, character));
+    EXPECT_EQ(defResponses.size(), 1);
+    if (defResponses.size() == 1) {
+        auto &defResponse = defResponses.at(0);
+        EXPECT_TRUE(defResponse->isResponse());
+        auto &defResult = get<variant<JSONNullObject, vector<unique_ptr<Location>>>>(*defResponse->asResponse().result);
+        return move(get<vector<unique_ptr<Location>>>(defResult));
+    }
+    return {};
+}
+
 void ProtocolTest::assertDiagnostics(vector<unique_ptr<LSPMessage>> messages, vector<ExpectedDiagnostic> expected) {
     for (auto &msg : messages) {
-        if (!assertNotificationMessage(LSPMethod::TextDocumentPublishDiagnostics, *msg)) {
-            // Assertion failed: Received a non-diagnostic. No need to continue.
-            return;
+        // Ignore typecheck run and sorbet/fence messages. They do not impact semantics.
+        if (!isTypecheckRun(*msg) && !isSorbetFence(*msg)) {
+            ASSERT_NO_FATAL_FAILURE(assertNotificationMessage(LSPMethod::TextDocumentPublishDiagnostics, *msg));
         }
     }
 
@@ -196,7 +214,7 @@ void ProtocolTest::assertDiagnostics(vector<unique_ptr<LSPMessage>> messages, ve
     vector<shared_ptr<ErrorAssertion>> errorAssertions;
     for (auto e : expected) {
         auto range = RangeAssertion::makeRange(e.line);
-        errorAssertions.push_back(ErrorAssertion::make(e.path, range, e.line, e.message));
+        errorAssertions.push_back(ErrorAssertion::make(e.path, range, e.line, e.message, "error"));
     }
 
     // Use same logic as main test runner.

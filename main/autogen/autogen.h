@@ -1,4 +1,8 @@
+#ifndef AUTOGEN_H
+#define AUTOGEN_H
+
 #include "ast/ast.h"
+#include "main/options/options.h"
 
 namespace sorbet::autogen {
 
@@ -8,21 +12,25 @@ struct ParsedFile;
 struct Reference;
 struct Definition;
 
+struct AutoloaderConfig;
+struct NamedDefinition;
+class DefTree;
+
 struct DefinitionRef {
     u4 _id;
 
     DefinitionRef() : _id(NONE_ID){};
     DefinitionRef(u4 id) : _id(id) {}
 
-    u4 id() {
+    u4 id() const {
         return _id;
     }
 
-    bool exists() {
+    bool exists() const {
         return _id != NONE_ID;
     }
 
-    Definition &data(ParsedFile &pf);
+    const Definition &data(const ParsedFile &pf) const;
 };
 
 struct ReferenceRef {
@@ -30,15 +38,15 @@ struct ReferenceRef {
     ReferenceRef() : _id(NONE_ID){};
     ReferenceRef(u4 id) : _id(id) {}
 
-    u4 id() {
+    u4 id() const {
         return _id;
     }
 
-    bool exists() {
+    bool exists() const {
         return _id != NONE_ID;
     }
 
-    Reference &data(ParsedFile &pf);
+    const Reference &data(const ParsedFile &pf) const;
 };
 
 struct Definition {
@@ -72,6 +80,8 @@ struct Reference {
 };
 
 struct ParsedFile {
+    friend class MsgpackWriter;
+
     ast::ParsedFile tree;
     u4 cksum;
     std::string path;
@@ -79,12 +89,10 @@ struct ParsedFile {
     std::vector<Reference> refs;
     std::vector<core::NameRef> requires;
 
-    std::string toString(core::Context ctx);
+    std::string toString(core::Context ctx) const;
     std::string toMsgpack(core::Context ctx, int version);
-
-private:
-    std::vector<core::NameRef> showFullName(core::Context ctx, DefinitionRef def);
-    friend class MsgpackWriter;
+    std::vector<core::NameRef> showFullName(core::Context ctx, DefinitionRef id) const;
+    std::vector<std::string> listAllClasses(core::Context ctx);
 };
 
 class Autogen final {
@@ -92,4 +100,6 @@ public:
     static ParsedFile generate(core::Context ctx, ast::ParsedFile tree);
     Autogen() = delete;
 };
+
 } // namespace sorbet::autogen
+#endif // AUTOGEN_H

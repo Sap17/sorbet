@@ -20,9 +20,7 @@ class B < A
 end
 
 def no_sig(&blk) # error: This function does not have a `sig`
-  # this error only happens in strict mode, since SigSuggestion only runs in strict mode,
-  # which then passes in generics to try to guess argument types
-  foo(*[1], &blk) # error: Passing generics as block arguments is not supported
+  foo(*[1], &blk)
 end
 
 sig {params(a: Integer, blk: T.nilable(T.proc.returns(String))).void}
@@ -52,5 +50,5 @@ end
 
 sig { params(blk: T.proc.params(arg0: Integer).returns(Integer)).void }
 def baz_splat(&blk)
-  foo_splat(*[1, "a"], &blk) # error: `T.proc.params(arg0: Integer).returns(Integer)` doesn't match `T.proc.params(arg0: Integer).returns(String)` for block argument
+  foo_splat(*[1, "a"], &blk) # error: Expected `T.proc.params(arg0: Integer).returns(String)` but found `T.proc.params(arg0: Integer).returns(Integer)` for block argument
 end

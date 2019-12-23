@@ -1,21 +1,27 @@
 // has to go first because it violates our poisons
 #include "msgpack.hpp"
 
+#include "absl/strings/str_split.h"
+#include "ast/Helpers.h"
 #include "ast/ast.h"
 #include "ast/treemap/treemap.h"
+#include "common/FileOps.h"
+#include "common/formatting.h"
+#include "common/typecase.h"
 #include "core/Names.h"
 #include "main/autogen/autogen.h"
+#include "main/autogen/autoloader.h"
 
 #include "CRC.h"
 
 using namespace std;
 namespace sorbet::autogen {
 
-Definition &DefinitionRef::data(ParsedFile &pf) {
+const Definition &DefinitionRef::data(const ParsedFile &pf) const {
     return pf.defs[_id];
 }
 
-Reference &ReferenceRef::data(ParsedFile &pf) {
+const Reference &ReferenceRef::data(const ParsedFile &pf) const {
     return pf.refs[_id];
 }
 
@@ -27,63 +33,6 @@ class AutogenWalk {
     vector<ast::Send *> ignoring;
 
     UnorderedMap<ast::Expression *, ReferenceRef> refMap;
-
-    static bool ignoreChild(ast::Expression *expr) {
-        bool result = false;
-
-        typecase(
-            expr, [&](ast::Send *send) { result = (send->fun == core::Names::keepForIde()); },
-
-            [&](ast::EmptyTree *) { result = true; },
-
-            [&](ast::InsSeq *seq) {
-                result = absl::c_all_of(seq->stats, [](auto &child) { return ignoreChild(child.get()); }) &&
-                         ignoreChild(seq->expr.get());
-            },
-
-            [&](ast::Expression *klass) { result = false; });
-        return result;
-    }
-
-    static bool definesBehavior(ast::Expression *expr) {
-        if (ignoreChild(expr)) {
-            return false;
-        }
-        bool result = true;
-
-        typecase(
-            expr,
-
-            [&](ast::ClassDef *klass) {
-                auto *id = ast::cast_tree<ast::UnresolvedIdent>(klass->name.get());
-                if (id && id->name == core::Names::singleton()) {
-                    // class << self; We consider this
-                    // behavior-defining. We could opt to recurse inside
-                    // the inner class, but we consider there to be no
-                    // valid use of `class << self` solely for namespacing,
-                    // so there's no need to support that use case.
-                    result = true;
-                } else {
-                    result = false;
-                }
-            },
-
-            [&](ast::Assign *asgn) {
-                if (ast::isa_tree<ast::ConstantLit>(asgn->lhs.get())) {
-                    result = false;
-                } else {
-                    result = true;
-                }
-            },
-
-            [&](ast::InsSeq *seq) {
-                result = absl::c_any_of(seq->stats, [](auto &child) { return definesBehavior(child.get()); }) ||
-                         definesBehavior(seq->expr.get());
-            },
-
-            [&](ast::Expression *klass) { result = true; });
-        return result;
-    }
 
     vector<core::NameRef> symbolName(core::Context ctx, core::SymbolRef sym) {
         vector<core::NameRef> out;
@@ -129,23 +78,9 @@ public:
         } else {
             def.type = Definition::Module;
         }
-        def.is_empty = absl::c_all_of(original->rhs, [](auto &tree) { return ignoreChild(tree.get()); });
-        for (auto &ancst : original->ancestors) {
-            auto *cnst = ast::cast_tree<ast::ConstantLit>(ancst.get());
-            if (cnst && cnst->original != nullptr) {
-                def.defines_behavior = true;
-            }
-        }
-        for (auto &ancst : original->singletonAncestors) {
-            auto *cnst = ast::cast_tree<ast::ConstantLit>(ancst.get());
-            if (cnst && cnst->original != nullptr) {
-                def.defines_behavior = true;
-            }
-        }
-        if (!def.defines_behavior) {
-            def.defines_behavior =
-                absl::c_any_of(original->rhs, [](auto &tree) { return definesBehavior(tree.get()); });
-        }
+        def.is_empty = absl::c_all_of(original->rhs,
+                                      [](auto &tree) { return sorbet::ast::BehaviorHelpers::checkEmptyDeep(tree); });
+        def.defines_behavior = sorbet::ast::BehaviorHelpers::checkClassDefinesBehavior(original);
 
         // TODO: ref.parent_of, def.parent_ref
         // TODO: expression_range
@@ -238,7 +173,7 @@ public:
         ref.definitionLoc = original->loc;
         ref.name = constantName(ctx, original.get());
         auto sym = original->symbol;
-        if (!sym.data(ctx)->isClass() || sym != core::Symbols::StubModule()) {
+        if (!sym.data(ctx)->isClassOrModule() || sym != core::Symbols::StubModule()) {
             ref.resolved = symbolName(ctx, sym);
         }
         ref.is_resolved_statically = true;
@@ -276,11 +211,11 @@ public:
     }
 
     unique_ptr<ast::Send> preTransformSend(core::Context ctx, unique_ptr<ast::Send> original) {
-        if (original->fun == core::Names::keepForIde()) {
+        if (original->fun == core::Names::keepForIde() || original->fun == core::Names::include() ||
+            original->fun == core::Names::extend()) {
             ignoring.emplace_back(original.get());
         }
-        if ((original->flags & ast::Send::PRIVATE_OK) != 0 && original->fun == core::Names::require() &&
-            original->args.size() == 1) {
+        if (original->isPrivateOk() && original->fun == core::Names::require() && original->args.size() == 1) {
             auto *lit = ast::cast_tree<ast::Literal>(original->args.front().get());
             if (lit && lit->isString(ctx)) {
                 requires.emplace_back(lit->asString(ctx));
@@ -315,7 +250,7 @@ ParsedFile Autogen::generate(core::Context ctx, ast::ParsedFile tree) {
     return pf;
 }
 
-vector<core::NameRef> ParsedFile::showFullName(core::Context ctx, DefinitionRef id) {
+vector<core::NameRef> ParsedFile::showFullName(core::Context ctx, DefinitionRef id) const {
     auto &def = id.data(*this);
     if (!def.defining_ref.exists()) {
         return {};
@@ -326,7 +261,7 @@ vector<core::NameRef> ParsedFile::showFullName(core::Context ctx, DefinitionRef 
     return scope;
 }
 
-string ParsedFile::toString(core::Context ctx) {
+string ParsedFile::toString(core::Context ctx) const {
     fmt::memory_buffer out;
     auto nameToString = [&](const auto &nm) -> string { return nm.data(ctx)->show(ctx); };
 
@@ -660,6 +595,22 @@ const map<int, vector<string>> MsgpackWriter::def_attr_map{
 string ParsedFile::toMsgpack(core::Context ctx, int version) {
     MsgpackWriter write(version);
     return write.pack(ctx, *this);
+}
+
+vector<string> ParsedFile::listAllClasses(core::Context ctx) {
+    vector<string> out;
+
+    for (auto &def : defs) {
+        if (def.type != Definition::Class) {
+            continue;
+        }
+        vector<core::NameRef> names = showFullName(ctx, def.id);
+        out.emplace_back(fmt::format("{}", fmt::map_join(names, "::", [&ctx](const core::NameRef &nm) -> string_view {
+                                         return nm.data(ctx)->shortName(ctx);
+                                     })));
+    }
+
+    return out;
 }
 
 } // namespace sorbet::autogen

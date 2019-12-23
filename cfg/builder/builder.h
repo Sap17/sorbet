@@ -15,7 +15,7 @@ private:
     static void dealias(core::Context ctx, CFG &cfg);
     static void simplify(core::Context ctx, CFG &cfg);
     static void sanityCheck(core::Context ctx, CFG &cfg);
-    static void fillInBlockArguments(core::Context ctx, CFG::ReadsAndWrites &RnW, CFG &cfg);
+    static void fillInBlockArguments(core::Context ctx, const CFG::ReadsAndWrites &RnW, CFG &cfg);
     static void computeMinMaxLoops(core::Context ctx, const CFG::ReadsAndWrites &RnW, CFG &cfg);
     static void removeDeadAssigns(core::Context ctx, const CFG::ReadsAndWrites &RnW, CFG &cfg);
     static void markLoopHeaders(core::Context ctx, CFG &cfg);
@@ -31,7 +31,8 @@ public:
     core::LocalVariable target;
     core::LocalVariable blockBreakTarget;
     int loops;
-    core::SymbolRef rubyBlock;
+    int rubyBlockId;
+    bool isInsideRubyBlock;
     BasicBlock *nextScope;
     BasicBlock *breakScope;
     BasicBlock *rescueScope;
@@ -43,21 +44,21 @@ public:
 
     CFGContext withTarget(core::LocalVariable target);
     CFGContext withBlockBreakTarget(core::LocalVariable blockBreakTarget);
-    CFGContext withLoopScope(BasicBlock *nextScope, BasicBlock *breakScope,
-                             core::SymbolRef rubyBlock = core::Symbols::noSymbol());
+    CFGContext withLoopScope(BasicBlock *nextScope, BasicBlock *breakScope, bool insideRubyBlock = false);
     CFGContext withSendAndBlockLink(const std::shared_ptr<core::SendAndBlockLink> &link);
+    CFGContext withRubyBlockId(int newBlockId);
 
     core::LocalVariable newTemporary(core::NameRef name);
 
 private:
     friend std::unique_ptr<CFG> CFGBuilder::buildFor(core::Context ctx, ast::MethodDef &md);
-    CFGContext(core::Context ctx, CFG &inWhat, core::LocalVariable target, int loops, BasicBlock *nextScope,
-               BasicBlock *breakScope, BasicBlock *rescueScope,
+    CFGContext(core::Context ctx, CFG &inWhat, core::LocalVariable target, int loops, int rubyBlockId,
+               BasicBlock *nextScope, BasicBlock *breakScope, BasicBlock *rescueScope,
                UnorderedMap<core::SymbolRef, core::LocalVariable> &aliases,
                UnorderedMap<core::NameRef, core::LocalVariable> &discoveredUndeclaredFields, u4 &temporaryCounter)
-        : ctx(ctx), inWhat(inWhat), target(target), loops(loops), nextScope(nextScope), breakScope(breakScope),
-          rescueScope(rescueScope), aliases(aliases), discoveredUndeclaredFields(discoveredUndeclaredFields),
-          temporaryCounter(temporaryCounter){};
+        : ctx(ctx), inWhat(inWhat), target(target), loops(loops), rubyBlockId(rubyBlockId), isInsideRubyBlock(false),
+          nextScope(nextScope), breakScope(breakScope), rescueScope(rescueScope), aliases(aliases),
+          discoveredUndeclaredFields(discoveredUndeclaredFields), temporaryCounter(temporaryCounter){};
 };
 } // namespace sorbet::cfg
 #endif // SORBET_BUILDER_H

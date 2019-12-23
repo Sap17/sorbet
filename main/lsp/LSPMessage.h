@@ -2,6 +2,7 @@
 #define RUBY_TYPER_LSP_LSPMESSAGE_H
 
 #include "common/Counters.h"
+#include "common/Timer.h"
 #include "main/lsp/json_types.h"
 #include "rapidjson/document.h"
 #include <chrono>
@@ -54,11 +55,12 @@ public:
     LSPMessage(rapidjson::Document &d);
     LSPMessage(const std::string &json);
 
-    /** A tracer for following LSP message in time traces */
-    std::optional<FlowId> startTracer;
-
-    /** Request counter. */
-    int counter;
+    /** A tracer for following LSP message in time traces. May contain multiple tracers if other messages were merged
+     * into this one.*/
+    std::vector<FlowId> startTracers;
+    /** Used to calculate latency of message processing. If this message represents multiple edits, it contains the
+     * oldest timer.*/
+    std::unique_ptr<Timer> timer;
 
     /** If `true`, then this LSPMessage contains a canceled LSP request. */
     bool canceled = false;
@@ -67,6 +69,11 @@ public:
      * Returns an ID if the message has one. Otherwise, returns nullopt.
      */
     std::optional<MessageId> id() const;
+
+    /**
+     * If `true`, this message can be delayed in favor of processing newer requests sooner (like file updates).
+     */
+    bool isDelayable() const;
 
     /**
      * Returns true if this is a request message.
@@ -128,7 +135,7 @@ public:
     /**
      * Returns the message in JSON form.
      */
-    std::string toJSON() const;
+    std::string toJSON(bool prettyPrint = false) const;
 };
 } // namespace sorbet::realmain::lsp
 

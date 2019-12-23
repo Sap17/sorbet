@@ -8,7 +8,7 @@ namespace sorbet::core {
 using namespace std;
 
 ErrorQueue::ErrorQueue(spdlog::logger &logger, spdlog::logger &tracer)
-    : errorFlusher(), owner(this_thread::get_id()), logger(logger), tracer(tracer){};
+    : owner(this_thread::get_id()), logger(logger), tracer(tracer){};
 
 pair<vector<unique_ptr<core::Error>>, vector<unique_ptr<core::lsp::QueryResponse>>>
 ErrorQueue::drainWithQueryResponses() {
@@ -76,13 +76,14 @@ void ErrorQueue::flushAutocorrects(const GlobalState &gs, FileSystem &fs) {
 }
 
 void ErrorQueue::pushError(const core::GlobalState &gs, unique_ptr<core::Error> error) {
-    if (!error->isSilenced) {
-        this->nonSilencedErrorCount.fetch_add(1);
-    }
     core::ErrorQueueMessage msg;
     msg.kind = core::ErrorQueueMessage::Kind::Error;
     msg.whatFile = error->loc.file();
-    msg.text = error->toString(gs);
+    if (!error->isSilenced) {
+        this->nonSilencedErrorCount.fetch_add(1);
+        // Serializing errors is expensive, so we only serialize them if the error isn't silenced.
+        msg.text = error->toString(gs);
+    }
     msg.error = move(error);
     this->queue.push(move(msg), 1);
 }
@@ -151,4 +152,5 @@ vector<unique_ptr<core::ErrorQueueMessage>> ErrorQueue::drainAll() {
 
     return out;
 }
+
 } // namespace sorbet::core

@@ -73,13 +73,18 @@ module Opus::Types::Test
       end
 
       it 'can hand back its underlying types' do
-        type = T.any(Integer, Boolean, NilClass)
+        type = T.any(Integer, T::Boolean, NilClass)
         value = type.types.map(&:raw_type)
-        assert_equal([Integer, Boolean, NilClass], value)
+        assert_equal([Integer, TrueClass, FalseClass, NilClass], value)
       end
 
       it "does not crash on anonymous classes" do
         type = T.any(Integer, Class.new, String)
+        assert_equal("T.any(Integer, String)", type.name)
+      end
+
+      it "unwraps aliased types" do
+        type = T.any(String, Integer, T::Private::Types::TypeAlias.new(-> {Integer}))
         assert_equal("T.any(Integer, String)", type.name)
       end
     end
@@ -122,11 +127,17 @@ module Opus::Types::Test
           type.name
         )
       end
+
+      it "unwraps aliased types" do
+        type_alias = T::Private::Types::TypeAlias.new(-> {Mixin1})
+        type = T.all(@type, type_alias)
+        assert_equal("T.all(Opus::Types::Test::TypesTest::Mixin1, Opus::Types::Test::TypesTest::Mixin2)", type.name)
+      end
     end
 
     describe "FixedArray" do
       before do
-        @type = T::Utils.coerce([String, Boolean])
+        @type = T::Utils.coerce([String, T::Boolean])
       end
 
       it "passes validation" do
@@ -136,23 +147,23 @@ module Opus::Types::Test
 
       it "fails validation with a non-array" do
         msg = @type.error_message_for_obj("hello")
-        assert_equal("Expected type [String, Boolean], got type String with value \"hello\"", msg)
+        assert_equal("Expected type [String, T::Boolean], got type String with value \"hello\"", msg)
       end
 
       it "fails validation with an array of the wrong size" do
         msg = @type.error_message_for_obj(["hello", true, false])
-        assert_equal("Expected type [String, Boolean], got array of size 3", msg)
+        assert_equal("Expected type [String, T::Boolean], got array of size 3", msg)
       end
 
       it "fails validation with an array of the right size but wrong types" do
         msg = @type.error_message_for_obj(["hello", nil])
-        assert_equal("Expected type [String, Boolean], got type [String, NilClass]", msg)
+        assert_equal("Expected type [String, T::Boolean], got type [String, NilClass]", msg)
       end
     end
 
     describe "FixedHash" do
       before do
-        @type = T::Utils.coerce({a: String, b: Boolean, c: T.nilable(Numeric)})
+        @type = T::Utils.coerce({a: String, b: T::Boolean, c: T.nilable(Numeric)})
       end
 
       it "passes validation" do
@@ -167,22 +178,22 @@ module Opus::Types::Test
 
       it "fails validation with a non-hash" do
         msg = @type.error_message_for_obj("hello")
-        assert_equal("Expected type {a: String, b: Boolean, c: T.nilable(Numeric)}, got type String with value \"hello\"", msg)
+        assert_equal("Expected type {a: String, b: T::Boolean, c: T.nilable(Numeric)}, got type String with value \"hello\"", msg)
       end
 
       it "fails validation with a hash of the wrong types" do
         msg = @type.error_message_for_obj({a: true, b: true, c: 3})
-        assert_equal("Expected type {a: String, b: Boolean, c: T.nilable(Numeric)}, got type {a: TrueClass, b: TrueClass, c: Integer}", msg)
+        assert_equal("Expected type {a: String, b: T::Boolean, c: T.nilable(Numeric)}, got type {a: TrueClass, b: TrueClass, c: Integer}", msg)
       end
 
       it "fails validation if a field is missing" do
         msg = @type.error_message_for_obj({b: true, c: 3})
-        assert_equal("Expected type {a: String, b: Boolean, c: T.nilable(Numeric)}, got type {b: TrueClass, c: Integer}", msg)
+        assert_equal("Expected type {a: String, b: T::Boolean, c: T.nilable(Numeric)}, got type {b: TrueClass, c: Integer}", msg)
       end
 
       it "fails validation if an extra field is present" do
         msg = @type.error_message_for_obj({a: "hello", b: true, d: "ohno"})
-        assert_equal("Expected type {a: String, b: Boolean, c: T.nilable(Numeric)}, got type {a: String, b: TrueClass, d: String}", msg)
+        assert_equal("Expected type {a: String, b: T::Boolean, c: T.nilable(Numeric)}, got type {a: String, b: TrueClass, d: String}", msg)
       end
     end
 
@@ -197,8 +208,8 @@ module Opus::Types::Test
       end
 
       it 'can hand back the underlying type' do
-        type = T::Array[Boolean]
-        assert_equal(Boolean, type.type.raw_type)
+        type = T::Array[Integer]
+        assert_equal(Integer, type.type.raw_type)
       end
 
       it 'fails if an element of the array is the wrong type' do
@@ -211,16 +222,16 @@ module Opus::Types::Test
       end
 
       it 'succeeds if all values have the correct type' do
-        type = T::Array[T.any(Integer, Boolean)]
+        type = T::Array[T.any(Integer, T::Boolean)]
         value = [true, 3, false, 4, 5, false]
         assert_nil(type.error_message_for_obj(value))
       end
 
       it 'fails if any of the values is the wrong type' do
-        type = T::Array[T.any(Integer, Boolean)]
+        type = T::Array[T.any(Integer, T::Boolean)]
         value = [true, 3.0, false, 4, "5", false]
-        expected_error = "Expected type T::Array[T.any(Boolean, Integer)], " \
-          "got T::Array[T.any(FalseClass, Float, Integer, String, TrueClass)]"
+        expected_error = "Expected type T::Array[T.any(Integer, T::Boolean)], " \
+          "got T::Array[T.any(Float, Integer, String, T::Boolean)]"
         msg = type.error_message_for_obj(value)
         assert_equal(expected_error, msg)
       end
@@ -238,7 +249,7 @@ module Opus::Types::Test
         type = T::Array[String]
         value = [true, false, 1]
         expected_error = "Expected type T::Array[String], " \
-          "got T::Array[T.any(FalseClass, Integer, TrueClass)]"
+          "got T::Array[T.any(Integer, T::Boolean)]"
         msg = type.error_message_for_obj(value)
         assert_equal(expected_error, msg)
       end
@@ -326,6 +337,30 @@ module Opus::Types::Test
       end
     end
 
+    describe "TypedEnumerator" do
+      it 'describes enumerators' do
+        t = T::Enumerator[Integer]
+        assert_equal(
+          "T::Enumerator[Integer]",
+          t.describe_obj([1, 2, 3].each))
+      end
+
+      it 'works if the type is right' do
+        type = T::Enumerator[Integer]
+        value = [1, 2, 3].each
+        msg = type.error_message_for_obj(value)
+        assert_nil(msg)
+      end
+
+      it 'can have its metatype instantiated' do
+        assert_equal([1, 2, 3], T::Enumerator[Integer].new do |x|
+          x << 1
+          x << 2
+          x << 3
+        end.to_a)
+      end
+    end
+
     describe "TypedRange" do
       it 'describes ranges' do
         t = T::Range[Integer]
@@ -401,8 +436,8 @@ module Opus::Types::Test
       end
 
       it 'can hand back the underlying type' do
-        type = T::Enumerable[Boolean]
-        assert_equal(Boolean, type.type.raw_type)
+        type = T::Enumerable[Integer]
+        assert_equal(Integer, type.type.raw_type)
       end
 
       it 'fails if an element of the array is the wrong type' do
@@ -415,16 +450,16 @@ module Opus::Types::Test
       end
 
       it 'succeeds if all values have the correct type' do
-        type = T::Enumerable[T.any(Integer, Boolean)]
+        type = T::Enumerable[T.any(Integer, T::Boolean)]
         value = [true, 3, false, 4, 5, false]
         assert_nil(type.error_message_for_obj(value))
       end
 
       it 'fails if any of the values is the wrong type' do
-        type = T::Enumerable[T.any(Integer, Boolean)]
+        type = T::Enumerable[T.any(Integer, T::Boolean)]
         value = [true, 3.0, false, 4, "5", false]
-        expected_error = "Expected type T::Enumerable[T.any(Boolean, Integer)], " \
-          "got T::Array[T.any(FalseClass, Float, Integer, String, TrueClass)]"
+        expected_error = "Expected type T::Enumerable[T.any(Integer, T::Boolean)], " \
+          "got T::Array[T.any(Float, Integer, String, T::Boolean)]"
         msg = type.error_message_for_obj(value)
         assert_equal(expected_error, msg)
       end
@@ -442,13 +477,13 @@ module Opus::Types::Test
         type = T::Enumerable[String]
         value = [true, false, 1]
         expected_error = "Expected type T::Enumerable[String], " \
-          "got T::Array[T.any(FalseClass, Integer, TrueClass)]"
+          "got T::Array[T.any(Integer, T::Boolean)]"
         msg = type.error_message_for_obj(value)
         assert_equal(expected_error, msg)
       end
 
       it 'wont check unrewindable enumerables' do
-        type = T::Enumerable[T.any(Integer, Boolean)]
+        type = T::Enumerable[T.any(Integer, T::Boolean)]
         value = File.new(__FILE__)
         assert_nil(type.error_message_for_obj(value))
       end
@@ -475,6 +510,13 @@ module Opus::Types::Test
         assert_nil(msg)
       end
 
+      it 'does not check potentially non-finite enumerables' do
+        type = T::Enumerable[Integer]
+        value = ["bad"].cycle
+        msg = type.error_message_for_obj(value)
+        assert_nil(msg)
+      end
+
       it 'can serialize enumerables whose each throws' do
         type = T::Enumerable[Integer]
         value = Class.new(Array) do
@@ -485,6 +527,45 @@ module Opus::Types::Test
         msg = type.error_message_for_obj(value)
         expected_error = "Expected type T::Enumerable[Integer], got T::Array[T.untyped]"
         assert_equal(expected_error, msg)
+      end
+    end
+
+    describe 'TypeAlias' do
+      # TODO nroman get rid of this helper after `T.type_alias` accepts a block.
+      def make_type_alias(&blk)
+        T::Private::Types::TypeAlias.new(blk)
+      end
+
+      it 'delegates name' do
+        type = make_type_alias {T.any(Integer, String)}
+        assert_equal('T.any(Integer, String)', type.name)
+      end
+
+      it 'delegates equality' do
+        assert(T.any(Integer, String) == make_type_alias {T.any(Integer, String)})
+        assert(make_type_alias {T.any(Integer, String)} == T.any(Integer, String))
+        assert(make_type_alias {T.any(Integer, String)} == make_type_alias {T.any(Integer, String)})
+
+        refute(make_type_alias {T.any(Integer, Float)} == make_type_alias {T.any(Integer, String)})
+      end
+
+      it 'passes a validation' do
+        type = make_type_alias {T.any(Integer, String)}
+        msg = type.error_message_for_obj(1)
+        assert_nil(msg)
+      end
+
+      it 'provides errors on failed validation' do
+        type = make_type_alias {T.any(Integer, String)}
+        msg = type.error_message_for_obj(true)
+        assert_equal('Expected type T.any(Integer, String), got type TrueClass', msg)
+      end
+
+      it 'defers block evaluation' do
+        crash_type = make_type_alias {raise 'crash'}
+        assert_raises(RuntimeError) do
+          crash_type.error_message_for_obj(1)
+        end
       end
     end
 
@@ -549,6 +630,76 @@ module Opus::Types::Test
       it 'fails validation with a nil value' do
         msg = @type.error_message_for_obj(nil)
         assert_equal("Expected type T.enum([:foo, :bar]), got nil", msg)
+      end
+    end
+
+    describe "TEnum" do
+      before do
+        class ::MyEnum < ::T::Enum
+          enums do
+            A = new
+            B = new
+            C = new
+          end
+        end
+      end
+
+      after do
+        ::Object.send(:remove_const, :MyEnum)
+      end
+
+      it 'allows T::Enum values when coercing' do
+        a = T::Utils.coerce(::MyEnum::A)
+        assert_instance_of(T::Types::TEnum, a)
+        assert_equal(a.val, ::MyEnum::A)
+      end
+
+      it 'allows T::Enum values in a sig params' do
+        c = Class.new do
+          extend T::Sig
+          sig {params(x: MyEnum::A).void}
+          def self.foo(x); end
+        end
+
+        # TODO(jez) check TypeError messages
+        c.foo(::MyEnum::A) # should not raise
+        assert_raises(TypeError) do
+          c.foo(::MyEnum::B)
+        end
+        assert_raises(TypeError) do
+          c.foo(MyEnum::C)
+        end
+      end
+
+      it 'allows T::Enum values in a sig returns' do
+        c = Class.new do
+          extend T::Sig
+          sig {returns(MyEnum::A)}
+          def self.good_return; MyEnum::A; end
+
+          sig {returns(MyEnum::B)}
+          def self.bad_return; MyEnum::C; end
+        end
+
+        assert_equal(c.good_return, MyEnum::A)
+
+        assert_raises(TypeError) do
+          c.bad_return
+        end
+      end
+
+      it 'allows T::Enum values in a union' do
+        c = Class.new do
+          extend T::Sig
+          sig {params(x: T.any(MyEnum::A, MyEnum::B)).void}
+          def self.foo(x); end
+        end
+
+        c.foo(::MyEnum::A) # should not raise
+        c.foo(::MyEnum::B) # should not raise
+        assert_raises(TypeError) do
+          c.foo(MyEnum::C)
+        end
       end
     end
 
@@ -899,6 +1050,26 @@ module Opus::Types::Test
           # rubocop:enable PrisonGuard/UseOpusTypesShortcut
         end
       end
+
+      describe 'untyped containers' do
+        it 'untyped containers are subtypes of typed containers' do
+          assert_subtype(T::Array[T.untyped], T::Array[Integer])
+          assert_subtype(T::Array[T.untyped], T::Enumerable[Integer])
+          assert_subtype(T::Set[T.untyped], T::Enumerable[Integer])
+          assert_subtype(T::Set[T.untyped], T::Set[Integer])
+          assert_subtype(T::Hash[T.untyped, T.untyped], T::Hash[Integer, String])
+          assert_subtype(T::Enumerator[T.untyped], T::Enumerator[Integer])
+        end
+
+        it 'typed containers are subtypes of untyped containers' do
+          assert_subtype(T::Array[Integer], T::Array[T.untyped])
+          assert_subtype(T::Array[Integer], T::Enumerable[T.untyped])
+          assert_subtype(T::Set[Integer], T::Enumerable[T.untyped])
+          assert_subtype(T::Set[Integer], T::Set[T.untyped])
+          assert_subtype(T::Hash[Integer, String], T::Hash[T.untyped, T.untyped])
+          assert_subtype(T::Enumerator[Integer], T::Enumerator[T.untyped])
+        end
+      end
     end
 
     module TestGeneric1
@@ -936,7 +1107,7 @@ module Opus::Types::Test
     end
 
     class GenericSingletonChild < GenericSingleton
-      SignletonTP = type_template(fixed: String)
+      SingletonTP = type_template(fixed: String)
     end
 
 

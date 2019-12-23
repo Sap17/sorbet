@@ -1,5 +1,0 @@
-class <emptyTree><<C <U <root>>>> < ()
-  <U <self>>.<U puts>(<U <self>>.<U `>("echo hi"))
-
-  <U <self>>.<U puts>(<U <self>>.<U `>("echo".<U concat>(" hi")))
-end

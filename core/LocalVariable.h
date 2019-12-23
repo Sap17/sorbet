@@ -9,6 +9,11 @@ namespace sorbet::core {
 class LocalVariable final {
 public:
     NameRef _name;
+
+    // NOTE: this field serves to disambiguate multiple definitions of the same
+    // local name, and identifies the block scope it was defined in.
+    // Additionally, this value can only be non-zero if the variable is defined
+    // in the scope of a block with a non-zero scope id.
     u4 unique;
 
     LocalVariable(NameRef name, u4 unique) : _name(name), unique(unique) {}
@@ -51,7 +56,12 @@ public:
         return LocalVariable(Names::blockCall(), 0);
     }
 
+    std::string showRaw(const GlobalState &gs) const;
     std::string toString(const GlobalState &gs) const;
+
+    // A unique representation of this name for exporting to external tools
+    std::string exportableName(const GlobalState &gs) const;
+
     static inline LocalVariable selfVariable() {
         return LocalVariable(Names::selfLocal(), 0);
     }

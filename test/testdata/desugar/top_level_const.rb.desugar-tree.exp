@@ -1,0 +1,3 @@
+class <emptyTree><<C <root>>> < ()
+  ::<root>::<C TopLevelConst>
+end

@@ -49,13 +49,16 @@ bool resolveTypeMember(core::GlobalState &gs, core::SymbolRef parent, core::Symb
             parent == core::Symbols::Enumerable() || parent.data(gs)->derivesFrom(gs, core::Symbols::Enumerable())
                 ? core::errors::Resolver::EnumerableParentTypeNotDeclared
                 : core::errors::Resolver::ParentTypeNotDeclared;
+
         if (auto e = gs.beginError(sym.data(gs)->loc(), code)) {
-            e.setHeader("Type `{}` declared by parent `{}` must be declared again", name.show(gs),
-                        parent.data(gs)->show(gs));
+            e.setHeader("Type `{}` declared by parent `{}` must be re-declared in `{}`", name.show(gs),
+                        parent.data(gs)->show(gs), sym.data(gs)->show(gs));
+            e.addErrorLine(parentTypeMember.data(gs)->loc(), "`{}` declared in parent here", name.show(gs));
         }
         my = gs.enterTypeMember(sym.data(gs)->loc(), sym, name, core::Variance::Invariant);
         my.data(gs)->setFixed();
-        my.data(gs)->resultType = core::Types::untyped(gs, sym);
+        auto untyped = core::Types::untyped(gs, sym);
+        my.data(gs)->resultType = core::make_type<core::LambdaParam>(my, untyped, untyped);
         return false;
     }
     const auto &data = my.data(gs);
@@ -63,6 +66,11 @@ bool resolveTypeMember(core::GlobalState &gs, core::SymbolRef parent, core::Symb
         if (auto e = gs.beginError(data->loc(), core::errors::Resolver::NotATypeVariable)) {
             e.setHeader("Type variable `{}` needs to be declared as `= type_member(SOMETHING)`", name.show(gs));
         }
+        auto synthesizedName = gs.freshNameUnique(core::UniqueNameKind::TypeVarName, name, 1);
+        my = gs.enterTypeMember(sym.data(gs)->loc(), sym, synthesizedName, core::Variance::Invariant);
+        my.data(gs)->setFixed();
+        auto untyped = core::Types::untyped(gs, sym);
+        my.data(gs)->resultType = core::make_type<core::LambdaParam>(my, untyped, untyped);
         return false;
     }
     auto myVariance = data->variance();
@@ -76,11 +84,11 @@ bool resolveTypeMember(core::GlobalState &gs, core::SymbolRef parent, core::Symb
     }
     typeAliases[sym._id].emplace_back(parentTypeMember, my);
     return true;
-}
+} // namespace
 
 void resolveTypeMembers(core::GlobalState &gs, core::SymbolRef sym,
                         vector<vector<pair<core::SymbolRef, core::SymbolRef>>> &typeAliases, vector<bool> &resolved) {
-    ENFORCE(sym.data(gs)->isClass());
+    ENFORCE(sym.data(gs)->isClassOrModule());
     if (resolved[sym._id]) {
         return;
     }
@@ -128,8 +136,13 @@ void resolveTypeMembers(core::GlobalState &gs, core::SymbolRef sym,
         }
     }
 
-    if (sym.data(gs)->isClassClass()) {
+    if (sym.data(gs)->isClassOrModuleClass()) {
         for (core::SymbolRef tp : sym.data(gs)->typeMembers()) {
+            // AttachedClass is covariant, but not controlled by the user.
+            if (tp.data(gs)->name == core::Names::Constants::AttachedClass()) {
+                continue;
+            }
+
             auto myVariance = tp.data(gs)->variance();
             if (myVariance != core::Variance::Invariant) {
                 auto loc = tp.data(gs)->loc();
@@ -143,230 +156,28 @@ void resolveTypeMembers(core::GlobalState &gs, core::SymbolRef sym,
         }
     }
 
-    // TODO: this will be the right moment to implement checks for correct locations of co&contra variant types.
-}
+    // If this class has no type members, fix attached class early.
+    if (sym.data(gs)->typeMembers().empty()) {
+        auto singleton = sym.data(gs)->lookupSingletonClass(gs);
+        if (singleton.exists()) {
+            // AttachedClass doesn't exist on `T.untyped`, which is a problem
+            // with RuntimeProfiled.
+            auto attachedClass = singleton.data(gs)->findMember(gs, core::Names::Constants::AttachedClass());
+            if (attachedClass.exists()) {
+                auto *lambdaParam = core::cast_type<core::LambdaParam>(attachedClass.data(gs)->resultType.get());
+                ENFORCE(lambdaParam != nullptr);
 
-const vector<core::SymbolRef> &getAbstractMethods(core::GlobalState &gs,
-                                                  UnorderedMap<core::SymbolRef, vector<core::SymbolRef>> &abstractCache,
-                                                  core::SymbolRef klass) {
-    vector<core::SymbolRef> abstract;
-    auto ent = abstractCache.find(klass);
-    if (ent != abstractCache.end()) {
-        return ent->second;
-    }
-
-    auto superclass = klass.data(gs)->superClass();
-    if (superclass.exists()) {
-        auto &superclassMethods = getAbstractMethods(gs, abstractCache, superclass);
-        // TODO(nelhage): This code coud go quadratic or even exponential given
-        // pathological arrangments of interfaces and abstract methods. Switch
-        // to a better data structure if that is ever a problem.
-        abstract.insert(abstract.end(), superclassMethods.begin(), superclassMethods.end());
-    }
-
-    for (auto ancst : klass.data(gs)->mixins()) {
-        auto fromMixin = getAbstractMethods(gs, abstractCache, ancst);
-        abstract.insert(abstract.end(), fromMixin.begin(), fromMixin.end());
-    }
-
-    auto isAbstract = klass.data(gs)->isClassAbstract();
-    if (isAbstract) {
-        for (auto mem : klass.data(gs)->members) {
-            if (mem.second.data(gs)->isMethod() && mem.second.data(gs)->isAbstract()) {
-                abstract.emplace_back(mem.second);
-            }
-        }
-    }
-
-    auto &entry = abstractCache[klass];
-    entry = std::move(abstract);
-    return entry;
-}
-
-struct Signature {
-    struct {
-        absl::InlinedVector<core::SymbolRef, 4> required;
-        absl::InlinedVector<core::SymbolRef, 4> optional;
-        core::SymbolRef rest;
-    } pos, kw;
-    core::SymbolRef blk;
-} left, right;
-
-Signature decomposeSignature(core::GlobalState &gs, core::SymbolRef method) {
-    Signature sig;
-    for (auto arg : method.data(gs)->arguments()) {
-        if (arg.data(gs)->isBlockArgument()) {
-            sig.blk = arg;
-            continue;
-        }
-
-        auto &dst = arg.data(gs)->isKeyword() ? sig.kw : sig.pos;
-        if (arg.data(gs)->isRepeated()) {
-            dst.rest = arg;
-        } else if (arg.data(gs)->isOptional()) {
-            dst.optional.push_back(arg);
-        } else {
-            dst.required.push_back(arg);
-        }
-    }
-    return sig;
-}
-
-// Eventually this should check the appropriate subtype relationships on types,
-// as well, but for now we just look at the argument shapes and ensure that they
-// are compatible.
-void validateCompatibleOverride(core::GlobalState &gs, core::SymbolRef superMethod, core::SymbolRef method) {
-    if (method.data(gs)->isOverloaded()) {
-        // Don't try to check overloaded methods; It's not immediately clear how
-        // to match overloads against their superclass definitions. Since we
-        // Only permit overloading in the stdlib for now, this is no great loss.
-        return;
-    }
-
-    auto left = decomposeSignature(gs, superMethod);
-    auto right = decomposeSignature(gs, method);
-
-    if (!right.pos.rest.exists()) {
-        auto leftPos = left.pos.required.size() + left.pos.optional.size();
-        auto rightPos = right.pos.required.size() + right.pos.optional.size();
-        if (leftPos > rightPos) {
-            if (auto e = gs.beginError(method.data(gs)->loc(), core::errors::Resolver::BadMethodOverride)) {
-                e.setHeader("Implementation of abstract method `{}` must accept at least `{}` positional arguments",
-                            superMethod.data(gs)->show(gs), leftPos);
-                e.addErrorLine(superMethod.data(gs)->loc(), "Base method defined here");
-            }
-        }
-    }
-
-    if (left.pos.rest.exists() && !right.pos.rest.exists()) {
-        if (auto e = gs.beginError(method.data(gs)->loc(), core::errors::Resolver::BadMethodOverride)) {
-            e.setHeader("Implementation of abstract method `{}` must accept *`{}`", superMethod.data(gs)->show(gs),
-                        left.pos.rest.data(gs)->argumentName(gs));
-            e.addErrorLine(superMethod.data(gs)->loc(), "Base method defined here");
-        }
-    }
-
-    if (right.pos.required.size() > left.pos.required.size()) {
-        if (auto e = gs.beginError(method.data(gs)->loc(), core::errors::Resolver::BadMethodOverride)) {
-            e.setHeader("Implementation of abstract method `{}` must accept no more than `{}` required argument(s)",
-                        superMethod.data(gs)->show(gs), left.pos.required.size());
-            e.addErrorLine(superMethod.data(gs)->loc(), "Base method defined here");
-        }
-    }
-
-    if (!right.kw.rest.exists()) {
-        for (auto req : left.kw.required) {
-            auto nm = req.data(gs)->name;
-            if (absl::c_any_of(right.kw.required, [&](auto &r) { return r.data(gs)->name == nm; }))
-                continue;
-            if (absl::c_any_of(right.kw.optional, [&](auto &r) { return r.data(gs)->name == nm; }))
-                continue;
-            if (auto e = gs.beginError(method.data(gs)->loc(), core::errors::Resolver::BadMethodOverride)) {
-                e.setHeader("Implementation of abstract method `{}` is missing required keyword argument `{}`",
-                            superMethod.data(gs)->show(gs), req.data(gs)->argumentName(gs));
-                e.addErrorLine(superMethod.data(gs)->loc(), "Base method defined here");
-            }
-        }
-    }
-
-    if (left.kw.rest.exists() && !right.kw.rest.exists()) {
-        if (auto e = gs.beginError(method.data(gs)->loc(), core::errors::Resolver::BadMethodOverride)) {
-            e.setHeader("Implementation of abstract method `{}` must accept **`{}`", superMethod.data(gs)->show(gs),
-                        left.kw.rest.data(gs)->argumentName(gs));
-            e.addErrorLine(superMethod.data(gs)->loc(), "Base method defined here");
-        }
-    }
-
-    for (auto extra : right.kw.required) {
-        if (absl::c_any_of(left.kw.required, [&](auto l) { return l.data(gs)->name == extra.data(gs)->name; })) {
-            continue;
-        }
-        if (auto e = gs.beginError(method.data(gs)->loc(), core::errors::Resolver::BadMethodOverride)) {
-            e.setHeader("Implementation of abstract method `{}` contains extra required keyword argument `{}`",
-                        superMethod.data(gs)->show(gs), extra.data(gs)->argumentName(gs));
-            e.addErrorLine(superMethod.data(gs)->loc(), "Base method defined here");
-        }
-    }
-
-    ENFORCE(left.blk.exists() && right.blk.exists(), "Broken assumption: every method has a block argument.");
-    // TODO This is a raw string comparison on argument names
-    if (left.blk.data(gs)->argumentName(gs) != core::Names::blkArg().data(gs)->shortName(gs) &&
-        right.blk.data(gs)->argumentName(gs) == core::Names::blkArg().data(gs)->shortName(gs)) {
-        if (auto e = gs.beginError(method.data(gs)->loc(), core::errors::Resolver::BadMethodOverride)) {
-            e.setHeader("Implementation of abstract method `{}` must explicitly name a block argument",
-                        superMethod.data(gs)->show(gs));
-            e.addErrorLine(superMethod.data(gs)->loc(), "Base method defined here");
-        }
-    }
-}
-
-void validateOverriding(core::GlobalState &gs, core::SymbolRef method) {
-    auto klass = method.data(gs)->owner;
-    auto name = method.data(gs)->name;
-    ENFORCE(klass.data(gs)->isClass());
-    auto klassData = klass.data(gs);
-    InlinedVector<core::SymbolRef, 4> overridenMethods;
-    if (klassData->superClass().exists()) {
-        auto superMethod = klassData->superClass().data(gs)->findMemberTransitive(gs, name);
-        if (superMethod.exists()) {
-            overridenMethods.emplace_back(superMethod);
-        }
-    }
-    for (const auto &mixin : klassData->mixins()) {
-        auto superMethod = mixin.data(gs)->findMember(gs, name);
-        if (superMethod.exists()) {
-            overridenMethods.emplace_back(superMethod);
-        }
-    }
-
-    for (const auto &overridenMethod : overridenMethods) {
-        if (overridenMethod.data(gs)->isFinalMethod()) {
-            if (auto e = gs.beginError(method.data(gs)->loc(), core::errors::Resolver::OverridesFinal)) {
-                e.setHeader("Method overrides a final method `{}`", overridenMethod.data(gs)->show(gs));
-                e.addErrorLine(overridenMethod.data(gs)->loc(), "defined here");
-            }
-        }
-        if ((overridenMethod.data(gs)->isAbstract() || overridenMethod.data(gs)->isOverridable()) &&
-            (method.data(gs)->isImplementation() || method.data(gs)->isOverride())) {
-            validateCompatibleOverride(gs, overridenMethod, method);
-        }
-    }
-}
-
-void validateAbstract(core::GlobalState &gs, UnorderedMap<core::SymbolRef, vector<core::SymbolRef>> &abstractCache,
-                      core::SymbolRef sym) {
-    if (sym.data(gs)->isClassAbstract()) {
-        return;
-    }
-    auto loc = sym.data(gs)->loc();
-    if (loc.exists() && loc.file().data(gs).isRBI()) {
-        return;
-    }
-
-    auto &abstract = getAbstractMethods(gs, abstractCache, sym);
-
-    if (abstract.empty()) {
-        return;
-    }
-
-    for (auto proto : abstract) {
-        if (proto.data(gs)->owner == sym) {
-            continue;
-        }
-
-        auto mem = sym.data(gs)->findConcreteMethodTransitive(gs, proto.data(gs)->name);
-        if (!mem.exists()) {
-            if (auto e = gs.beginError(loc, core::errors::Resolver::BadAbstractMethod)) {
-                e.setHeader("Missing definition for abstract method `{}`", proto.data(gs)->show(gs));
-                e.addErrorLine(proto.data(gs)->loc(), "defined here");
+                lambdaParam->lowerBound = core::Types::bottom();
+                lambdaParam->upperBound = sym.data(gs)->externalType(gs);
             }
         }
     }
 }
+
 }; // namespace
 
 void Resolver::finalizeAncestors(core::GlobalState &gs) {
-    Timer timer(gs.errorQueue->logger, "resolver.finalize_ancestors");
+    Timer timer(gs.tracer(), "resolver.finalize_ancestors");
     int methodCount = 0;
     int classCount = 0;
     for (int i = 1; i < gs.symbolsUsed(); ++i) {
@@ -375,11 +186,11 @@ void Resolver::finalizeAncestors(core::GlobalState &gs) {
         if (loc.file().exists() && loc.file().data(gs).sourceType == core::File::Type::Normal) {
             if (ref.data(gs)->isMethod()) {
                 methodCount++;
-            } else if (ref.data(gs)->isClass()) {
+            } else if (ref.data(gs)->isClassOrModule()) {
                 classCount++;
             }
         }
-        if (!ref.data(gs)->isClass()) {
+        if (!ref.data(gs)->isClassOrModule()) {
             continue;
         }
         classCount++;
@@ -411,7 +222,7 @@ void Resolver::finalizeAncestors(core::GlobalState &gs) {
                 ref.data(gs)->setSuperClass(attached.data(gs)->superClass().data(gs)->singletonClass(gs));
             }
         } else {
-            if (ref.data(gs)->isClassClass()) {
+            if (ref.data(gs)->isClassOrModuleClass()) {
                 if (!core::Symbols::Object().data(gs)->derivesFrom(gs, ref) && core::Symbols::Object() != ref) {
                     ref.data(gs)->setSuperClass(core::Symbols::Object());
                 }
@@ -460,13 +271,13 @@ int maybeAddMixin(core::GlobalState &gs, core::SymbolRef forSym, InlinedVector<c
 // tails of class linearization aren't copied around.
 // In order to obtain Ruby-side ancestors, one would need to walk superclass chain and concatenate `mixins`.
 // The algorithm is harder to explain than to code, so just follow code & tests if `testdata/resolver/linearization`
-ParentLinearizationInformation computeLinearization(core::GlobalState &gs, core::SymbolRef ofClass) {
+ParentLinearizationInformation computeClassLinearization(core::GlobalState &gs, core::SymbolRef ofClass) {
     ENFORCE(ofClass.exists());
     auto data = ofClass.data(gs);
-    ENFORCE(data->isClass());
-    if (!data->isClassLinearizationComputed()) {
+    ENFORCE(data->isClassOrModule());
+    if (!data->isClassOrModuleLinearizationComputed()) {
         if (data->superClass().exists()) {
-            computeLinearization(gs, data->superClass());
+            computeClassLinearization(gs, data->superClass());
         }
         InlinedVector<core::SymbolRef, 4> currentMixins = data->mixins();
         InlinedVector<core::SymbolRef, 4> newMixins;
@@ -474,18 +285,16 @@ ParentLinearizationInformation computeLinearization(core::GlobalState &gs, core:
             if (mixin == data->superClass()) {
                 continue;
             }
-            if (mixin.data(gs)->superClass() == core::Symbols::StubAncestor() ||
+            if (mixin.data(gs)->superClass() == core::Symbols::StubSuperClass() ||
                 mixin.data(gs)->superClass() == core::Symbols::StubModule()) {
                 newMixins.emplace_back(mixin);
                 continue;
             }
-            ENFORCE(mixin.data(gs)->isClass());
-            ParentLinearizationInformation mixinLinearization = computeLinearization(gs, mixin);
+            ENFORCE(mixin.data(gs)->isClassOrModule());
+            ParentLinearizationInformation mixinLinearization = computeClassLinearization(gs, mixin);
 
-            if (!mixin.data(gs)->isClassModule()) {
-                if (mixin != core::Symbols::SinatraBase() && mixin != core::Symbols::BasicObject()) {
-                    // This is a class but Sinatra pass `include`'s it.
-                    // Because Sinatra does weird stuff and that's how we model it :-()
+            if (!mixin.data(gs)->isClassOrModuleModule()) {
+                if (mixin != core::Symbols::BasicObject()) {
                     if (auto e = gs.beginError(data->loc(), core::errors::Resolver::IncludesNonModule)) {
                         e.setHeader("Only modules can be `{}`d. This module or class includes `{}`", "include",
                                     mixin.data(gs)->show(gs));
@@ -511,7 +320,7 @@ ParentLinearizationInformation computeLinearization(core::GlobalState &gs, core:
             }
         }
     }
-    ENFORCE(data->isClassLinearizationComputed());
+    ENFORCE(data->isClassOrModuleLinearizationComputed());
     return ParentLinearizationInformation{data->mixins(), data->superClass(), ofClass};
 }
 
@@ -522,19 +331,18 @@ void fullLinearizationSlowImpl(core::GlobalState &gs, const ParentLinearizationI
 
     for (auto m : info.mixins) {
         if (!absl::c_linear_search(acc, m)) {
-            if (m.data(gs)->isClassModule()) {
+            if (m.data(gs)->isClassOrModuleModule()) {
                 acc.emplace_back(m);
             } else {
-                fullLinearizationSlowImpl(gs, computeLinearization(gs, m), acc);
+                fullLinearizationSlowImpl(gs, computeClassLinearization(gs, m), acc);
             }
         }
     }
     if (info.superClass.exists()) {
         if (!absl::c_linear_search(acc, info.superClass)) {
-            fullLinearizationSlowImpl(gs, computeLinearization(gs, info.superClass), acc);
+            fullLinearizationSlowImpl(gs, computeClassLinearization(gs, info.superClass), acc);
         }
     }
-    return;
 };
 InlinedVector<core::SymbolRef, 4> ParentLinearizationInformation::fullLinearizationSlow(core::GlobalState &gs) {
     InlinedVector<core::SymbolRef, 4> res;
@@ -542,21 +350,21 @@ InlinedVector<core::SymbolRef, 4> ParentLinearizationInformation::fullLinearizat
     return res;
 }
 
-void computeLinearization(core::GlobalState &gs) {
-    Timer timer(gs.errorQueue->logger, "resolver.compute_linearization");
+void Resolver::computeLinearization(core::GlobalState &gs) {
+    Timer timer(gs.tracer(), "resolver.compute_linearization");
 
     // TODO: this does not support `prepend`
     for (int i = 1; i < gs.symbolsUsed(); ++i) {
         const auto &data = core::SymbolRef(&gs, i).data(gs);
-        if (!data->isClass()) {
+        if (!data->isClassOrModule()) {
             continue;
         }
-        computeLinearization(gs, core::SymbolRef(&gs, i));
+        computeClassLinearization(gs, core::SymbolRef(&gs, i));
     }
 }
 
 void Resolver::finalizeSymbols(core::GlobalState &gs) {
-    Timer timer(gs.errorQueue->logger, "resolver.finalize_resolution");
+    Timer timer(gs.tracer(), "resolver.finalize_resolution");
     // TODO(nelhage): Properly this first loop should go in finalizeAncestors,
     // but we currently compute mixes_in_class_methods during the same AST walk
     // that resolves types and we don't want to introduce additional passes if
@@ -564,7 +372,7 @@ void Resolver::finalizeSymbols(core::GlobalState &gs) {
     // `ResolveConstantsWalk` if it becomes necessary to process earlier.
     for (int i = 1; i < gs.symbolsUsed(); ++i) {
         auto sym = core::SymbolRef(&gs, i);
-        if (!sym.data(gs)->isClass()) {
+        if (!sym.data(gs)->isClassOrModule()) {
             continue;
         }
 
@@ -577,7 +385,7 @@ void Resolver::finalizeSymbols(core::GlobalState &gs) {
             if (!singleton.exists()) {
                 singleton = sym.data(gs)->singletonClass(gs);
             }
-            singleton.data(gs)->mixins().emplace_back(classMethods);
+            singleton.data(gs)->addMixin(classMethods);
         }
     }
 
@@ -589,26 +397,8 @@ void Resolver::finalizeSymbols(core::GlobalState &gs) {
     resolved.resize(gs.symbolsUsed());
     for (int i = 1; i < gs.symbolsUsed(); ++i) {
         auto sym = core::SymbolRef(&gs, i);
-        if (sym.data(gs)->isClass()) {
+        if (sym.data(gs)->isClassOrModule()) {
             resolveTypeMembers(gs, sym, typeAliases, resolved);
-        }
-    }
-}
-
-void Resolver::validateSymbols(core::GlobalState &gs) {
-    Timer timeit(gs.tracer(), "Resolver::validateSymbols");
-    UnorderedMap<core::SymbolRef, vector<core::SymbolRef>> abstractCache;
-
-    for (int i = 1; i < gs.symbolsUsed(); ++i) {
-        auto sym = core::SymbolRef(&gs, i);
-        if (!sym.data(gs)->loc().exists() || sym.data(gs)->loc().file().data(gs).isPayload()) {
-            continue;
-        }
-        if (sym.data(gs)->isClass()) {
-            validateAbstract(gs, abstractCache, sym);
-        }
-        if (sym.data(gs)->isMethod() && !sym.data(gs)->isBlockSymbol(gs)) {
-            validateOverriding(gs, sym);
         }
     }
 }

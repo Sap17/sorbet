@@ -4,14 +4,46 @@
 //
 
 // List of projects/orgs using your project for the users page.
-const users = [];
+const users = [
+  {
+    caption: 'Shopify',
+    image: 'img/shopify-logo.svg',
+    infoLink: 'https://www.shopify.com/',
+  },
+  {
+    caption: 'Coinbase',
+    image: 'img/coinbase-logo.png',
+    infoLink: 'https://www.coinbase.com/',
+  },
+  {
+    caption: 'Atrium',
+    image: 'img/atrium-logo.jpg',
+    infoLink: 'https://www.atrium.co/',
+  },
+  {
+    caption: 'Chan Zuckerberg Initiative',
+    image: 'img/czi-logo.svg',
+    infoLink: 'https://chanzuckerberg.com/',
+  },
+  {
+    caption: 'Gusto',
+    image: 'img/gusto-logo.jpg',
+    infoLink: 'https://gusto.com/',
+  },
+  {
+    caption: 'Kickstarter',
+    image: 'img/kickstarter-logo.png',
+    infoLink: 'https://www.kickstarter.com/',
+  },
+];
 
 const siteConfig = {
   title: 'Sorbet',
   tagline: 'A static type checker for Ruby',
   url: 'https://sorbet.org',
+  cname: 'sorbet.org',
   baseUrl: '/',
-  editUrl: 'https://github.com/stripe/sorbet/edit/master/website/docs/',
+  editUrl: 'https://github.com/sorbet/sorbet/edit/master/website/docs/',
 
   // Used for publishing and more
   projectName: 'sorbet',
@@ -24,8 +56,10 @@ const siteConfig = {
     // for "Get started" means that only the "Docs" tab will ever be active.
     {label: 'Get started', href: '/docs/adopting'},
     {label: 'Docs', doc: 'overview'},
-    {label: 'Try it online', href: 'https://sorbet.run'},
-    {label: 'Talks', doc: 'talks'},
+    {label: 'Try', href: 'https://sorbet.run'},
+    {label: 'Community', href: '/en/community'},
+    {label: 'GitHub', href: 'https://github.com/sorbet/sorbet'},
+    {blog: true, label: 'Blog'},
   ],
 
   customDocsPath: 'website/docs',
@@ -40,8 +74,13 @@ const siteConfig = {
 
   /* Colors for website */
   colors: {
-    primaryColor:   '#4f4397', // --sorbet-purple-2
+    primaryColor: '#4f4397', // --sorbet-purple-2
     secondaryColor: '#4f4397', // --sorbet-purple-2
+  },
+
+  markdownOptions: {
+    typographer: true,
+    quotes: '“”‘’',
   },
 
   // Custom fonts for website
@@ -74,8 +113,9 @@ const siteConfig = {
   cleanUrl: true,
 
   // Open Graph and Twitter card images.
-  ogImage: 'img/sorbet-logo-purple-sparkles.svg',
-  twitterImage: 'img/sorbet-logo-purple-sparkles.svg',
+  // (these images can't be SVGs)
+  ogImage: 'img/sorbet-logo-card@2x.png',
+  twitterImage: 'img/sorbet-logo-card@2x.png',
 
   // Show documentation's last contributor's name.
   // enableUpdateBy: true,
@@ -85,8 +125,10 @@ const siteConfig = {
 
   algolia: {
     apiKey: 'fa1ec885ab70787d636759b88e509b92',
+    // This name must match the index name here:
+    // https://github.com/algolia/docsearch-configs/blob/master/configs/stripe_sorbet.json
     indexName: 'stripe_sorbet',
-    algoliaOptions: {} // Optional, if provided by Algolia
+    algoliaOptions: {}, // Optional, if provided by Algolia
   },
 
   gaTrackingId: 'UA-119877071-2',

@@ -2,7 +2,7 @@
 require_relative '../test_helper'
 
 module Opus::Types::Test
-  class SigBuilderSyntaxTest < Critic::Unit::UnitTest
+  class BuilderSyntaxTest < Critic::Unit::UnitTest
     after do
       T::Private::DeclState.current.reset!
     end
@@ -33,7 +33,7 @@ module Opus::Types::Test
       # @see T::Test::AbstractValidationTest
       # for error cases with abstract/override/implementation signatures
 
-      it 'correctly constructs abstract/override/implementation modes' do
+      it 'correctly constructs abstract/override modes' do
         # `sig` block is run in scope of decl, so it doesn't have assertion methods.
         # Hoist to assert afterwards.
         builders = {}
@@ -54,7 +54,7 @@ module Opus::Types::Test
         Child1 = Class.new(Base) do
           extend T::Sig
           sig do
-            builders[:implementation] = void.implementation
+            builders[:override] = void.override
           end
           def implement_me; end
 
@@ -67,7 +67,7 @@ module Opus::Types::Test
         Child2 = Class.new(Base) do
           extend T::Sig
           sig do
-            builders[:implementation_overridable] = void.implementation.overridable
+            builders[:override_overridable] = void.override.overridable
           end
           def implement_me; end
         end
@@ -75,47 +75,35 @@ module Opus::Types::Test
         Child3 = Class.new(Base) do
           extend T::Sig
           sig do
-            builders[:overridable_implementation] = void.overridable.implementation
+            builders[:overridable_override] = void.overridable.override
           end
           def implement_me; end
         end
 
         Child1.new.implement_me
         assert_equal('abstract', builders[:abstract].decl.mode)
-        assert_equal('implementation', builders[:implementation].decl.mode)
 
         Child1.new.override_me
         assert_equal('overridable', builders[:overridable].decl.mode)
         assert_equal('override', builders[:override].decl.mode)
 
         Child2.new.implement_me
-        assert_equal('overridable_implementation', builders[:implementation_overridable].decl.mode)
+        assert_equal('overridable_override', builders[:override_overridable].decl.mode)
 
         Child3.new.implement_me
-        assert_equal('overridable_implementation', builders[:overridable_implementation].decl.mode)
+        assert_equal('overridable_override', builders[:overridable_override].decl.mode)
       end
 
       INVALID_MODE_TESTS = [
         [:abstract, :abstract],
         [:abstract, :override],
         [:abstract, :overridable],
-        [:abstract, :implementation],
 
         [:override, :abstract],
         [:override, :override],
-        [:override, :overridable],
-        [:override, :implementation],
 
         [:overridable, :abstract],
-        [:overridable, :override],
         [:overridable, :overridable],
-
-        [:implementation, :abstract],
-        [:implementation, :override],
-        [:implementation, :implementation],
-
-        [:implementation, :overridable, :overridable],
-        [:implementation, :overridable, :implementation],
       ]
       INVALID_MODE_TESTS.each do |seq|
         name = (["sig"] + seq).join(".")
@@ -185,10 +173,12 @@ module Opus::Types::Test
         describe 'runtime levels' do
           before do
             @orig_check_tests = T::Private::RuntimeLevels.check_tests?
+            @orig_default_checked_level = T::Private::RuntimeLevels.instance_variable_get(:@default_checked_level)
           end
 
           after do
             T::Private::RuntimeLevels._toggle_checking_tests(@orig_check_tests)
+            T::Private::RuntimeLevels.instance_variable_set(:@default_checked_level, @orig_default_checked_level)
           end
 
           it '`always` is checked' do
@@ -251,9 +241,95 @@ module Opus::Types::Test
             mod.test_method(1) # invocation ensures it's wrapped
 
             err = assert_raises(RuntimeError) do
-              T::Utils.DANGER_enable_checking_in_tests
+              T::Configuration.enable_checking_for_sigs_marked_checked_tests
             end
             assert_match(/Toggle `:tests`-level runtime type checking earlier/, err.message)
+          end
+
+          it 'override default checked level to :never' do
+            T::Private::RuntimeLevels.instance_variable_set(:@default_checked_level, :never)
+
+            a = Module.new do
+              extend T::Sig
+              sig {params(x: Integer).void}
+              def self.foo(x); end
+            end
+
+            a.foo('') # type error ignored
+
+            pass
+          end
+
+          it 'override default checked level to :tests, without checking tests' do
+            T::Private::RuntimeLevels._toggle_checking_tests(false)
+            T::Private::RuntimeLevels.instance_variable_set(:@default_checked_level, :tests)
+
+            a = Module.new do
+              extend T::Sig
+              sig {params(x: Integer).void}
+              def self.foo(x); end
+            end
+
+            a.foo('') # type error ignored
+
+            T::Private::RuntimeLevels._toggle_checking_tests(true)
+            pass
+          end
+
+          it 'override default checked level to :tests and also check tests' do
+            T::Private::RuntimeLevels.instance_variable_set(:@default_checked_level, :tests)
+            T::Private::RuntimeLevels._toggle_checking_tests(true)
+
+            a = Module.new do
+              extend T::Sig
+              sig {params(x: Integer).void}
+              def self.foo(x); end
+            end
+
+            assert_raises(TypeError) do
+              a.foo('')
+            end
+          end
+
+          it 'override default checked level to :never but opt in with .checked(:always)' do
+            T::Private::RuntimeLevels.instance_variable_set(:@default_checked_level, :never)
+
+            a = Module.new do
+              extend T::Sig
+              sig {params(x: Integer).void.checked(:always)}
+              def self.foo(x); end
+            end
+
+            assert_raises(TypeError) do
+              a.foo('')
+            end
+          end
+
+          it 'setting the default checked level raises if set too late' do
+            Module.new do
+              extend T::Sig
+              sig {void}
+              def self.foo; end
+              foo
+            end
+
+            err = assert_raises(RuntimeError) do
+              T::Configuration.default_checked_level = :never
+            end
+            assert_match(/Set the default checked level earlier/, err.message)
+          end
+
+          it 'forbids .on_failure if default_checked_level is :never' do
+            T::Private::RuntimeLevels.instance_variable_set(:@default_checked_level, :never)
+
+            ex = assert_raises do
+              Class.new do
+                extend T::Sig
+                sig {void.on_failure(:soft, notify: 'me')}
+                def self.foo; end; foo
+              end
+            end
+            assert_includes(ex.message, "To use .on_failure you must additionally call .checked(:tests) or .checked(:always), otherwise, the .on_failure has no effect")
           end
         end
       end
@@ -280,81 +356,86 @@ module Opus::Types::Test
         assert_includes(ex.message, "You can't call .checked multiple times in a signature.")
       end
 
-      it 'forbids multiple .soft calls' do
+      it 'forbids multiple .on_failure calls' do
         ex = assert_raises do
           Class.new do
             extend T::Sig
-            sig {returns(Integer).soft(notify: 'me').soft(notify: 'you')}
+            sig {returns(Integer).on_failure(:soft, notify: 'me').on_failure(:soft, notify: 'you')}
             def self.foo; end; foo
           end
         end
-        assert_includes(ex.message, "You can't call .soft multiple times in a signature.")
+        assert_includes(ex.message, "You can't call .on_failure multiple times in a signature.")
       end
 
-      it 'forbids .soft and then .checked' do
+      it 'forbids .on_failure and then .checked(:never)' do
         ex = assert_raises do
           Class.new do
             extend T::Sig
-            sig {returns(Integer).soft(notify: 'me').checked(:never)}
+            sig {returns(NilClass).on_failure(:soft, notify: 'me').checked(:never)}
             def self.foo; end; foo
           end
         end
-        assert_includes(ex.message, "You can't use .checked with .soft.")
+        assert_includes(ex.message, "You can't use .checked(:never) with .on_failure")
       end
 
-      it 'forbids .checked and then .soft' do
+      it 'allows .on_failure and then .checked(:tests)' do
+        Class.new do
+          extend T::Sig
+          sig {returns(NilClass).on_failure(:soft, notify: 'me').checked(:tests)}
+          def self.foo; end; foo
+        end
+        pass
+      end
+
+      it 'allows .on_failure and then .checked(:always)' do
+        Class.new do
+          extend T::Sig
+          sig {returns(NilClass).on_failure(:soft, notify: 'me').checked(:always)}
+          def self.foo; end; foo
+        end
+        pass
+      end
+
+      it 'forbids .checked(:never) and then .on_failure' do
         ex = assert_raises do
           Class.new do
             extend T::Sig
-            sig {returns(Integer).soft(notify: 'me').checked(:never)}
+            # We explicitly need to test that this ordering raises a certain error
+            sig {returns(NilClass).checked(:never).on_failure(:soft, notify: 'me')} # rubocop:disable PrisonGuard/SigBuilderOrder
             def self.foo; end; foo
           end
         end
-        assert_includes(ex.message, "You can't use .checked with .soft.")
+        assert_includes(ex.message, "You can't use .on_failure with .checked(:never)")
       end
 
-      it 'forbids empty notify' do
-        ex = assert_raises do
-          Class.new do
-            extend T::Sig
-            sig {returns(Integer).soft(notify: '')}
-            def self.foo; end; foo
-          end
+      it 'allows .checked(:tests) and then .on_failure' do
+        Class.new do
+          extend T::Sig
+          # We explicitly need to test that this ordering does not raise an error
+          sig {returns(NilClass).checked(:tests).on_failure(:soft, notify: 'me')} # rubocop:disable PrisonGuard/SigBuilderOrder
+          def self.foo; end; foo
         end
-        assert_includes(ex.message, "You can't provide an empty notify to .soft().")
       end
 
-      it 'forbids unpassed notify' do
-        ex = assert_raises(ArgumentError) do
-          Class.new do
-            extend T::Sig
-            sig {returns(Integer).soft}
-            def self.foo; end; foo
-          end
+      it 'allows .checked(:always) and then .on_failure' do
+        Class.new do
+          extend T::Sig
+          # We explicitly need to test that this ordering does not raise an error
+          sig {returns(NilClass).checked(:always).on_failure(:soft, notify: 'me')} # rubocop:disable PrisonGuard/SigBuilderOrder
+          def self.foo; end; foo
         end
-        assert_includes(ex.message, "missing keyword: notify")
       end
 
-      it 'forbids .generated and then .checked' do
-        ex = assert_raises do
+      it 'forbids generated' do
+        e = assert_raises(NameError) do
           Class.new do
             extend T::Sig
-            sig {generated.returns(Integer).checked(:never)}
-            def self.foo; end; foo
+            sig {void.generated}
+            def self.foo; end
+            foo
           end
         end
-        assert_includes(ex.message, "You can't use .checked with .generated.")
-      end
-
-      it 'forbids .generated and then .soft' do
-        ex = assert_raises do
-          Class.new do
-            extend T::Sig
-            sig {generated.returns(Integer).soft(notify: '')}
-            def self.foo; end; foo
-          end
-        end
-        assert_includes(ex.message, "You can't use .soft with .generated.")
+        assert_includes(e.message, "generated")
       end
 
       it 'disallows return then void' do
@@ -421,8 +502,8 @@ module Opus::Types::Test
       line = nil
       klass = Class.new do
         extend T::Sig
-          line = __LINE__; sig {params(x: Integer)}
-          def f(x); end
+        line = __LINE__; sig {params(x: Integer)}
+        def f(x); end
       end
 
       e = assert_raises(ArgumentError) do

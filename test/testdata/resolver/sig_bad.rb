@@ -2,7 +2,7 @@
 class T1; end
 class T2; end
 
-class T::Private::Methods::SigBuilder
+class T::Private::Methods::DeclBuilder
   def unsupported
   end
 end
@@ -20,9 +20,9 @@ class A
       d: T.enum([]), # error: enum([]) is invalid
       e: T.enum([unsupported]), # error: Unsupported type literal
       f: 0, # error: Unsupported type syntax
-      g: T.any(*[Integer, String]), # error: Splats are unsupported by the static checker
-      h: T.junk, # error: Unsupported method `T.junk`
-       # ^^^^^^ error: Method `junk` does not exist on `T.class_of(T)`
+      g: T.any(*[Integer, String]), # error: splats cannot be used in types
+      h: T.junk, # error: Method `junk` does not exist on `T.class_of(T)`
+       # ^^^^^^ error: Unsupported method `T.junk`
       i: T.class_of(T1, T2), # error: Too many arguments provided for method `T.class_of`
       j: T.class_of(T.nilable(Integer)), # error: T.class_of needs a Class as its argument
       k: T.class_of(1), # error: T.class_of needs a Class as its argument

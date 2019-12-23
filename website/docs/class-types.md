@@ -4,21 +4,21 @@ title: Class Types
 ---
 
 > **Note**: Class types are used to describe values that are instances of a
-> class—these are the most commonly used types. To instead learn about types for
-> class objects themselves, see [T.class_of](class-of.md).
+> class---these are the most commonly used types. To instead learn about types
+> for class objects themselves, see [T.class_of](class-of.md).
 
 Every Ruby class and module doubles as a type in Sorbet. Class types supersede
 the notion some other languages have of "primitive" types. For example, `"abc"`
 is an instance of the `String` class, and so `"abc"` has type `String`. The same
 goes for many other values in Ruby:
 
-| Type    | Example value |
-| ---     | ---           |
-| `"abc"` | `String`      |
-| `:abc`  | `Symbol`      |
-| `42`    | `Integer`     |
-| `3.14`  | `Float`       |
-| `nil`   | `NilClass`    |
+| Type       | Example value |
+| ---------- | ------------- |
+| `String`   | `"abc"`       |
+| `Symbol`   | `:abc`        |
+| `Integer`  | `42`          |
+| `Float`    | `3.14`        |
+| `NilClass` | `nil`         |
 
 To reiterate: a class type means "any value which is an instance of this class".
 If `x.is_a?(SomeClass)` would return `true` when run, then `x` has type
@@ -41,9 +41,9 @@ end
 ## Booleans
 
 One gotcha is that `false` is an instance of `FalseClass`, and `true` is an
-instance of `TrueClass`—there is no `Boolean` class in Ruby. So to represent the
-type of booleans in Sorbet, the `sorbet-runtime` uses [type
-aliases](type-aliases.md) and [union types](union-types.md) to define a
+instance of `TrueClass`---there is no `Boolean` class in Ruby. So to represent
+the type of booleans in Sorbet, the `sorbet-runtime` uses
+[type aliases](type-aliases.md) and [union types](union-types.md) to define a
 convenient name for "either `true` or `false`": `T::Boolean`.
 
 ```ruby
@@ -161,4 +161,3 @@ end
 
 foo(MyClass.new)  # ok; MyClass mixes in MyModule
 ```
-

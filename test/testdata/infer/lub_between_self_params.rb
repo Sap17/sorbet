@@ -1,12 +1,12 @@
 # typed: true
          class QueryProfile < Hash
-#        ^^^^^^^^^^^^^^^^^^^^^^^^^ noerror Type `K` declared by parent `Hash` must be declared again
-#        ^^^^^^^^^^^^^^^^^^^^^^^^^ noerror Type `Elem` declared by parent `Hash` must be declared again
+#        ^^^^^^^^^^^^^^^^^^^^^^^^^ noerror Type `K` declared by parent `Hash` must be re-declared in `QueryProfile`
+#        ^^^^^^^^^^^^^^^^^^^^^^^^^ noerror Type `Elem` declared by parent `Hash` must be re-declared in `QueryProfile`
 				   V = type_member
            def explain_for(which)
              self["explain_#{which}"] || self[:"explain_#{which}"]
-#            ^^^^^^^^^^^^^^^^^^^^^^^^ error: `String` doesn't match `QueryProfile::V` for argument `arg0`
-#                                        ^^^^^^^^^^^^^^^^^^^^^^^^^ error: `Symbol` doesn't match `QueryProfile::V` for argument `arg0`
+#            ^^^^^^^^^^^^^^^^^^^^^^^^ error: Expected `QueryProfile::V` but found `String` for argument `arg0`
+#                                        ^^^^^^^^^^^^^^^^^^^^^^^^^ error: Expected `QueryProfile::V` but found `Symbol` for argument `arg0`
            end
          end
 
@@ -23,7 +23,7 @@ class Child < Parent
   A = type_member
   def foo(which)
     self["foo"] || self["bar"]
-#   ^^^^^^^^^^^ error: `String("foo")` doesn't match `Child::A` for argument `k`
-#                  ^^^^^^^^^^^ error: `String("bar")` doesn't match `Child::A` for argument `k`
+#   ^^^^^^^^^^^ error: Expected `Child::A` but found `String("foo")` for argument `k`
+#                  ^^^^^^^^^^^ error: Expected `Child::A` but found `String("bar")` for argument `k`
   end
 end

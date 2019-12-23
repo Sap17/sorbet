@@ -44,10 +44,10 @@ class Opus::Types::Test::Props::StructTest < Critic::Unit::UnitTest
   end
 
   it 'type check hash field correspondingly' do
-    assert_raises(T::Props::InvalidValueError) do
+    assert_raises(TypeError) do
       StructWithPredefinedHash.new(hash_field1: {a: 'foo', b: 200}, hash_field2: {a: 100, b: 200})
     end
-    assert_raises(T::Props::InvalidValueError) do
+    assert_raises(TypeError) do
       StructWithPredefinedHash.new(hash_field1: {a: 100, b: 200}, hash_field2: {a: 'foo', b: 200})
     end
   end
@@ -63,11 +63,18 @@ class Opus::Types::Test::Props::StructTest < Critic::Unit::UnitTest
     assert_equal('object_id', doc.class.decorator.prop_get(doc, :object_id))
   end
 
+  class SubStruct < T::Struct
+    prop :bar1, String
+    prop :bar2, String
+  end
+
   class TestStruct < T::Struct
     prop :foo0, Integer
     prop :foo1, Integer
     prop :foo2, String
     prop :foo3, T.nilable(String)
+    prop :foo4, T.nilable(T::Array[String])
+    prop :foo5, T.nilable(T::Array[SubStruct])
   end
 
   class StructWithReqiredField < T::Struct
@@ -77,10 +84,52 @@ class Opus::Types::Test::Props::StructTest < Critic::Unit::UnitTest
 
   describe 'required/optional prop test' do
     it 'Test optional: false' do
-      assert_equal(false, TestStruct.props[:foo0][:optional])
-      assert_equal(false, TestStruct.props[:foo1][:optional])
-      assert_equal(false, TestStruct.props[:foo2][:optional])
-      assert_equal(true, TestStruct.props[:foo3][:optional])
+      assert_equal(true, T::Props::Utils.required_prop?(TestStruct.props[:foo0]))
+      assert_nil(TestStruct.props[:foo0][:optional])
+
+      assert_equal(true, T::Props::Utils.required_prop?(TestStruct.props[:foo1]))
+      assert_nil(TestStruct.props[:foo1][:optional])
+
+      assert_equal(true, T::Props::Utils.required_prop?(TestStruct.props[:foo2]))
+      assert_nil(TestStruct.props[:foo2][:optional])
+
+      assert_equal(true, T::Props::Utils.optional_prop?(TestStruct.props[:foo3]))
+      assert_nil(TestStruct.props[:foo3][:optional])
+
+      assert_equal(true, T::Props::Utils.optional_prop?(TestStruct.props[:foo4]))
+      assert_nil(TestStruct.props[:foo4][:optional])
+
+      assert_equal(true, T::Props::Utils.optional_prop?(TestStruct.props[:foo5]))
+      assert_nil(TestStruct.props[:foo5][:optional])
+    end
+
+    it 'tstruct tnilable field type_object' do
+      c = Class.new(T::Struct) do
+        prop :foo, T.nilable(String)
+        prop :wday, T.nilable(String), enum: ['mon', 'tue']
+      end
+      assert_equal(T.nilable(String), c.props[:foo][:type_object])
+      assert_equal(T.nilable(T.enum(['mon', 'tue'])), c.props[:wday][:type_object])
+    end
+
+    it 'tstruct deserialize optional fields' do
+      doc = TestStruct.from_hash(
+        {'foo0' => 0, 'foo1' => 1, 'foo2' => '2', 'foo3' => '3', 'foo5' => [{'bar1' => 'bar1', 'bar2' => 'bar2'}]})
+      assert_equal('bar1', doc.foo5[0].bar1)
+
+      assert_equal(String, TestStruct.props[:foo2][:type])
+      assert_equal(T::Types::Simple, TestStruct.props[:foo2][:type_object].class)
+      assert_equal(String, TestStruct.props[:foo2][:type_object].raw_type)
+
+      assert_equal(String, TestStruct.props[:foo3][:type])
+      assert_equal(T.nilable(String), TestStruct.props[:foo3][:type_object])
+
+      assert_equal(T::Array[String], TestStruct.props[:foo4][:type])
+      assert_equal(T.nilable(T::Array[String]), TestStruct.props[:foo4][:type_object])
+
+      assert_equal(T::Array[Opus::Types::Test::Props::StructTest::SubStruct], TestStruct.props[:foo5][:type])
+      assert_equal(
+        T.nilable(T::Array[Opus::Types::Test::Props::StructTest::SubStruct]), TestStruct.props[:foo5][:type_object])
     end
 
     it 'tstruct need to initialize required fields' do
@@ -101,12 +150,12 @@ class Opus::Types::Test::Props::StructTest < Critic::Unit::UnitTest
       assert_equal(10, doc.foo1)
       assert_equal(20, doc.foo2)
 
-      assert_raises(Opus::Extn::Assertions::HardAssertionRuntimeError) do
+      assert_raises(RuntimeError) do
         StructWithReqiredField.from_hash({'foo2' => 20})
       end
 
       # The code should behave for deserialization.
-      assert_raises(Opus::Extn::Assertions::HardAssertionRuntimeError) do
+      assert_raises(RuntimeError) do
         StructWithReqiredField.from_hash({'foo1' => 10})
       end
     end

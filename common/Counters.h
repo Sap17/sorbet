@@ -1,6 +1,8 @@
 #ifndef SORBET_COUNTERS_H
 #define SORBET_COUNTERS_H
+#include "common/ConstExprStr.h"
 #include "common/common.h"
+#include <chrono>
 #include <string>
 
 namespace sorbet {
@@ -26,19 +28,6 @@ constexpr bool enable_counters = debug_mode;
 // compiler will typically deduplicate string literals within a translation
 // units (but not necessarily between translation units), but this can't be
 // relied upon, so we canonicalize strings when retrieving statistics.
-
-struct ConstExprStr {
-    char const *str;
-    std::size_t size;
-
-    // can only construct from a char[] literal
-    template <std::size_t N>
-    constexpr ConstExprStr(char const (&s)[N])
-        : str(s), size(N - 1) // not count the trailing null
-    {}
-
-    ConstExprStr() = delete;
-};
 
 struct CounterImpl;
 
@@ -94,14 +83,14 @@ void prodHistogramInc(ConstExprStr histogram, int key);
 void prodHistogramAdd(ConstExprStr histogram, int key, unsigned long value);
 /* Does not aggregate over measures, instead, reports them separately.
  * Use with care, as it can make us report a LOT of data. */
-void timingAdd(std::string_view measure, unsigned long start, unsigned long end);
-void timingAddAsync(std::string_view measure, unsigned long start, unsigned long end);
 struct FlowId {
-    std::string name;
     int id;
 };
-FlowId timingAddFlowStart(std::string_view measure, unsigned long start);
-void timingAddFlowEnd(FlowId flowId, unsigned long end);
+
+void timingAdd(ConstExprStr measure, std::chrono::time_point<std::chrono::steady_clock> start,
+               std::chrono::time_point<std::chrono::steady_clock> end,
+               std::vector<std::pair<ConstExprStr, std::string>> args, FlowId self, FlowId previous);
+
 UnorderedMap<long, long> getAndClearHistogram(ConstExprStr histogram);
 std::string getCounterStatistics(std::vector<std::string> names);
 

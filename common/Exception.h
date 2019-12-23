@@ -31,6 +31,16 @@ public:
     FileReadException(const std::string &message) : SorbetException(message) {}
 };
 
+class CreateDirException : SorbetException {
+public:
+    CreateDirException(const std::string &message) : SorbetException(message) {}
+};
+
+class RemoveFileException : SorbetException {
+public:
+    RemoveFileException(const std::string &message) : SorbetException(message) {}
+};
+
 class Exception final {
 public:
     template <typename... TArgs>[[noreturn]] static bool raise(const TArgs &... args) __attribute__((noreturn));
@@ -42,13 +52,14 @@ public:
     static void printBacktrace() noexcept;
     static void failInFuzzer() noexcept;
 
-    [[noreturn]] static inline bool enforce_handler(std::string check, std::string file, int line)
+    [[noreturn]] static inline bool enforce_handler(std::string_view check, std::string_view file, int line)
         __attribute__((noreturn)) {
         enforce_handler(check, file, line, "(no message provided)");
     }
     template <typename... TArgs>
-    [[noreturn]] static inline bool enforce_handler(std::string check, std::string file, int line, std::string message,
-                                                    const TArgs &... args) __attribute__((noreturn)) {
+    [[noreturn]] static inline bool enforce_handler(std::string_view check, std::string_view file, int line,
+                                                    std::string_view message, const TArgs &... args)
+        __attribute__((noreturn)) {
         raise("{}:{} enforced condition {} has failed: {}", file, line, check, fmt::format(message, args...));
     }
 };

@@ -1,0 +1,7 @@
+class <emptyTree><<C <root>>> < ()
+  def test_lambda<<C <todo sym>>>(&<blk>)
+    <self>.lambda() do |x|
+      x.*(x)
+    end
+  end
+end

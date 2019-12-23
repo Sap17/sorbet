@@ -7,14 +7,15 @@ Gem::Specification.new do |s|
   s.files       = Dir.glob('lib/**/*')
   s.homepage    = 'https://sorbet.run'
   s.license     = 'Apache-2.0'
+  s.metadata = {
+    "source_code_uri" => "https://github.com/sorbet/sorbet"
+  }
+
+  s.required_ruby_version = ['>= 2.3.0']
 
   s.add_development_dependency 'minitest', '~> 5.11'
   s.add_development_dependency 'mocha', '~> 1.7'
   s.add_development_dependency 'rake'
-
-  # TODO this is temporary, to prevent leaking publicly.
-  # Prevent pushing this gem to RubyGems.org. To allow pushes either set the 'allowed_push_host'
-  # to allow pushing to a single host or delete this section to allow pushing to any host.
-  raise 'RubyGems 2.0 or newer is required to protect against public gem pushes.' unless s.respond_to?(:metadata)
-  s.metadata['allowed_push_host'] = ''
+  # for reproducing race conditions in tests
+  s.add_development_dependency 'concurrent-ruby', '~> 1.1.5'
 end

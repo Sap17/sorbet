@@ -5,7 +5,7 @@
 class Sorbet; end
 module Sorbet::Private; end
 
-require_relative './sorbet'
+require_relative './t'
 require_relative './step_interface'
 require_relative './serialize'
 require_relative './constant_cache'
@@ -15,14 +15,17 @@ require_relative './real_stdlib'
 require 'fileutils'
 require 'json'
 require 'set'
+require 'tmpdir'
 
 class Sorbet::Private::HiddenMethodFinder
   PATH = "sorbet/rbi/hidden-definitions/"
-  TMP_PATH = "/tmp/sorbet-hidden-definitions/"
+  TMP_PATH = Dir.mktmpdir + "/"
   TMP_RBI = TMP_PATH + "reflection.rbi"
   DIFF_RBI = TMP_PATH + "hidden.rbi.tmp"
   RBI_CONSTANTS = TMP_PATH + "reflection.json"
+  RBI_CONSTANTS_ERR = RBI_CONSTANTS + ".err"
   SOURCE_CONSTANTS = TMP_PATH + "from-source.json"
+  SOURCE_CONSTANTS_ERR = SOURCE_CONSTANTS + ".err"
 
   HIDDEN_RBI = PATH + "hidden.rbi"
   ERRORS_RBI = PATH + "errors.txt"
@@ -36,62 +39,29 @@ class Sorbet::Private::HiddenMethodFinder
   end
 
   def main
-    remove_temp_files # comment this out if you want to use incremental
-    mkdir
-    if hidden_rbi
-      require_everything
-      classes, aliases = all_modules_and_aliases
-      gen_source_rbi(classes, aliases)
-    end
-    if hidden_json
-      rm_rbis
-      write_constants
-    end
-    if hidden_diff
-      rm_rbis
-      source, rbi = read_constants
-      require_everything
-      write_diff(source, rbi)
-    end
-    if hidden_splits
-      split_rbi
-    end
-  end
-
-  def mkdir
-    FileUtils.mkdir_p(PATH) unless Dir.exist?(PATH)
-    FileUtils.mkdir_p(TMP_PATH) unless Dir.exist?(TMP_PATH)
-  end
-
-  def remove_temp_files
-    FileUtils.rm_r(PATH) if Dir.exist?(PATH)
-    FileUtils.rm_r(TMP_PATH) if Dir.exist?(TMP_PATH)
+    mk_dir
+    require_everything
+    classes, aliases = all_modules_and_aliases
+    gen_source_rbi(classes, aliases)
     rm_rbis
+    write_constants
+    source, rbi = read_constants
+    write_diff(source, rbi)
+    split_rbi
+    rm_dir
+  end
+
+  def mk_dir
+    FileUtils.mkdir_p(PATH) unless Dir.exist?(PATH)
+  end
+
+  def rm_dir
+    FileUtils.rm_r(TMP_PATH)
   end
 
   def require_everything
     puts "Requiring all of your code"
     Sorbet::Private::RequireEverything.require_everything
-  end
-
-  def hidden_rbi
-    return true if !File.exist?(TMP_RBI)
-    puts "#{TMP_RBI} already exists, not generating"
-  end
-
-  def hidden_json
-    return true if !File.exist?(RBI_CONSTANTS) || !File.exist?(SOURCE_CONSTANTS)
-    puts "#{RBI_CONSTANTS} and #{SOURCE_CONSTANTS} already exists, not generating"
-  end
-
-  def hidden_diff
-    return true if !File.exist?(DIFF_RBI)
-    puts "#{DIFF_RBI} already exists, not generating"
-  end
-
-  def hidden_splits
-    return true if !File.exist?(HIDDEN_RBI) || !File.exist?(ERRORS_RBI)
-    puts "All split RBIs already exist, not generating"
   end
 
   def constant_cache
@@ -111,7 +81,7 @@ class Sorbet::Private::HiddenMethodFinder
 
   def gen_source_rbi(classes, aliases)
     puts "Generating #{TMP_RBI} with #{classes.count} modules and #{aliases.count} aliases"
-    serializer = Sorbet::Private::Serialize.new
+    serializer = Sorbet::Private::Serialize.new(constant_cache)
     buffer = []
     buffer << Sorbet::Private::Serialize.header
 
@@ -133,47 +103,50 @@ class Sorbet::Private::HiddenMethodFinder
     puts "Printing your code's symbol table into #{SOURCE_CONSTANTS}"
     io = IO.popen(
       [
-        'srb',
+        File.realpath("#{__dir__}/../bin/srb"),
         'tc',
-        '--print=symbol-table-json',
+        '--print=symbol-table-full-json',
         '--stdout-hup-hack',
         '--silence-dev-message',
         '--no-error-count',
       ],
-      err: '/dev/null'
+      err: SOURCE_CONSTANTS_ERR
     )
     File.write(SOURCE_CONSTANTS, io.read)
     io.close
+    raise "Your source can't be read by Sorbet.\nYou can try `find . -type f | xargs -L 1 -t bundle exec srb tc --no-config --error-white-list 1000` and hopefully the last file it is processing before it dies is the culprit.\nIf not, maybe the errors in this file will help: #{SOURCE_CONSTANTS_ERR}" if File.read(SOURCE_CONSTANTS).empty?
 
     puts "Printing #{TMP_RBI}'s symbol table into #{RBI_CONSTANTS}"
-    # Change dir to deal with you having a sorbet/config in your cwd
-    read, write = IO.pipe
-    Dir.chdir(TMP_PATH) do
-      io = IO.popen(
-        [
-          'srb',
-          'tc',
-          '--print=symbol-table-json',
-          # Method redefined with mismatched argument is ok since sometime
-          # people monkeypatch over method
-          '--error-black-list=4010',
-          # Redefining constant is needed because we serialize things both as
-          # aliases and in-class constants.
-          '--error-black-list=4012',
-          # Invalid nesting is ok because we don't generate all the intermediate
-          # namespaces for aliases
-          '--error-black-list=4015',
-          '--stdout-hup-hack',
-          '--silence-dev-message',
-          '--no-error-count',
-          TMP_RBI,
-        ],
-        err: write
-      )
-    end
+    io = IO.popen(
+      [
+        File.realpath("#{__dir__}/../bin/srb"),
+        'tc',
+        # Make sure we don't load a sorbet/config in your cwd
+        '--no-config',
+        '--print=symbol-table-full-json',
+        # The hidden-definition serializer is not smart enough to put T::Enum
+        # constants it discovers inside an `enums do` block. We probably want
+        # to come up with a better long term solution here.
+        '--error-black-list=3506',
+        # Method redefined with mismatched argument is ok since sometime
+        # people monkeypatch over method
+        '--error-black-list=4010',
+        # Redefining constant is needed because we serialize things both as
+        # aliases and in-class constants.
+        '--error-black-list=4012',
+        # Invalid nesting is ok because we don't generate all the intermediate
+        # namespaces for aliases
+        '--error-black-list=4015',
+        '--stdout-hup-hack',
+        '--silence-dev-message',
+        '--no-error-count',
+        TMP_RBI,
+      ],
+      err: RBI_CONSTANTS_ERR
+    )
     File.write(RBI_CONSTANTS, io.read)
     io.close
-    raise "#{TMP_RBI} has unexpected errors:\n#{read.gets}" unless $?.success?
+    raise "#{TMP_RBI} had unexpected errors. Check this file for a clue: #{RBI_CONSTANTS_ERR}" unless $?.success?
   end
 
   def read_constants
@@ -222,6 +195,9 @@ class Sorbet::Private::HiddenMethodFinder
     ret = []
 
     rbi.each do |rbi_entry|
+      # skip duplicated constant fields
+      next if rbi_entry["name"]["kind"] == "UNIQUE" and rbi_entry["name"]["unique"] == "MANGLE_RENAME"
+
       source_entry = source_by_name[rbi_entry["name"]["name"]]
 
       ret << serialize_alias(source_entry, rbi_entry, klass, source_symbols, rbi_symbols)
@@ -232,7 +208,7 @@ class Sorbet::Private::HiddenMethodFinder
   end
 
   def serialize_class(source_entry, rbi_entry, klass, source_symbols, rbi_symbols, source_by_name)
-    return if rbi_entry["kind"] != "CLASS"
+    return if rbi_entry["kind"] != "CLASS_OR_MODULE"
 
     name = rbi_entry["name"]["name"]
     if name.start_with?('<Class:')
@@ -261,7 +237,7 @@ class Sorbet::Private::HiddenMethodFinder
     else
       source_type = source_entry["kind"]
     end
-    if source_type && source_type != "CLASS"
+    if source_type && source_type != "CLASS_OR_MODULE"
       return "# The source says #{real_name(my_klass)} is a #{source_type} but reflection says it is a #{rbi_entry['kind']}"
     end
 
@@ -343,7 +319,7 @@ class Sorbet::Private::HiddenMethodFinder
         is_stub = source_entry['superClass'] && source_symbols[source_entry['superClass']] == 'Sorbet::Private::Static::StubModule'
         next unless is_stub
       end
-      next if Sorbet::Private::ConstantLookupCache::DEPRECATED_CONSTANTS.include?("#{klass.name}::#{name}")
+      next if Sorbet::Private::ConstantLookupCache::DEPRECATED_CONSTANTS.include?("#{Sorbet::Private::RealStdlib.real_name(klass)}::#{name}")
       begin
         my_value = klass.const_get(name, false) # rubocop:disable PrisonGuard/NoDynamicConstAccess
       rescue StandardError, LoadError => e
@@ -366,7 +342,7 @@ class Sorbet::Private::HiddenMethodFinder
   private def serialize_methods(source, rbi, klass, is_singleton)
     source_by_name = source.map {|v| [v["name"]["name"], v]}.to_h
     ret = []
-    maker = Sorbet::Private::Serialize.new
+    maker = Sorbet::Private::Serialize.new(constant_cache)
     rbi.each do |rbi_entry|
       next if rbi_entry["kind"] != "METHOD"
       name = rbi_entry["name"]["name"]

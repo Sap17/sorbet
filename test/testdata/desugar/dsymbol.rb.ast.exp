@@ -1,9 +1,0 @@
-class <emptyTree><<C <U <root>>>> < ()
-  :"foo"
-
-  "foo".<U intern>()
-
-  :""
-
-  "hello_".<U concat>(<U <self>>.<U name>().<U to_s>()).<U concat>("!").<U intern>()
-end

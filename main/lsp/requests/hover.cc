@@ -1,86 +1,101 @@
+#include "absl/strings/ascii.h"
 #include "core/lsp/QueryResponse.h"
 #include "main/lsp/lsp.h"
 
 using namespace std;
 
 namespace sorbet::realmain::lsp {
-unique_ptr<core::GlobalState> LSPLoop::handleTextDocumentHover(unique_ptr<core::GlobalState> gs, const MessageId &id,
-                                                               const TextDocumentPositionParams &params) {
-    ResponseMessage response("2.0", id, LSPMethod::TextDocumentHover);
-    if (!opts.lspHoverEnabled) {
-        response.error = make_unique<ResponseError>((int)LSPErrorCodes::InvalidRequest,
-                                                    "The `Hover` LSP feature is experimental and disabled by default.");
-        sendResponse(response);
-        return gs;
+
+string methodInfoString(const core::GlobalState &gs, const core::TypePtr &retType,
+                        const core::DispatchResult &dispatchResult,
+                        const unique_ptr<core::TypeConstraint> &constraint) {
+    string contents = "";
+    auto start = &dispatchResult;
+    ;
+    while (start != nullptr) {
+        auto &component = start->main;
+        if (component.method.exists()) {
+            if (!contents.empty()) {
+                contents += "\n";
+            }
+            contents = absl::StrCat(
+                contents, prettyTypeForMethod(gs, component.method, component.receiver, retType, constraint.get()));
+        }
+        start = start->secondary.get();
     }
 
+    return contents;
+}
+
+unique_ptr<ResponseMessage> LSPLoop::handleTextDocumentHover(LSPTypechecker &typechecker, const MessageId &id,
+                                                             const TextDocumentPositionParams &params) const {
+    auto response = make_unique<ResponseMessage>("2.0", id, LSPMethod::TextDocumentHover);
     prodCategoryCounterInc("lsp.messages.processed", "textDocument.hover");
 
-    auto result =
-        setupLSPQueryByLoc(move(gs), params.textDocument->uri, *params.position, LSPMethod::TextDocumentHover, false);
-    if (auto run = get_if<TypecheckRun>(&result)) {
-        auto finalGs = move(run->gs);
-        auto &queryResponses = run->responses;
+    const core::GlobalState &gs = typechecker.state();
+    auto result = queryByLoc(typechecker, params.textDocument->uri, *params.position, LSPMethod::TextDocumentHover);
+    if (result.error) {
+        // An error happened while setting up the query.
+        response->error = move(result.error);
+    } else {
+        auto &queryResponses = result.responses;
         if (queryResponses.empty()) {
             // Note: Need to specifically specify the variant type here so the null gets placed into the proper slot.
-            response.result = variant<JSONNullObject, unique_ptr<Hover>>(JSONNullObject());
-            sendResponse(response);
-            return finalGs;
+            response->result = variant<JSONNullObject, unique_ptr<Hover>>(JSONNullObject());
+            return response;
         }
 
         auto resp = move(queryResponses[0]);
-        if (auto sendResp = resp->isSend()) {
-            if (sendResp->dispatchComponents.empty()) {
-                response.error = make_unique<ResponseError>(
-                    (int)LSPErrorCodes::InvalidParams,
-                    "Did not find any dispatchComponents for a SEND QueryResponse in textDocument/hover");
-                sendResponse(response);
-                return finalGs;
-            }
-            string contents = "";
-            auto retType = sendResp->retType.type;
-            auto &constraint = sendResp->constraint;
-            for (auto &dispatchComponent : sendResp->dispatchComponents) {
-                if (constraint) {
-                    retType =
-                        core::Types::instantiate(core::Context(*finalGs, core::Symbols::root()), retType, *constraint);
-                }
-                if (dispatchComponent.method.exists()) {
-                    if (contents.size() > 0) {
-                        contents += " ";
-                    }
-                    contents += methodDetail(*finalGs, dispatchComponent.method, dispatchComponent.receiver, retType,
-                                             constraint);
+
+        optional<string> documentation = nullopt;
+        if (resp->isConstant() || resp->isField() || resp->isDefinition()) {
+            auto origins = resp->getTypeAndOrigins().origins;
+            if (!origins.empty()) {
+                auto loc = origins[0];
+                if (loc.exists()) {
+                    documentation = findDocumentation(loc.file().data(gs).source(), loc.beginPos());
                 }
             }
-            // We use markdown here because if we just use a string, VSCode tries to interpret
-            // things like <Class:Foo> as html tags and make them clickable (but the click takes
-            // you somewhere nonsensical)
-            auto markupContents = make_unique<MarkupContent>(MarkupKind::Markdown, contents);
-            response.result = make_unique<Hover>(move(markupContents));
-            sendResponse(response);
-        } else if (auto defResp = resp->isDefinition()) {
-            // TODO: Actually send the type signature here. I'm skipping this for now
-            // since it's not a very useful feature for the end user (i.e., they should
-            // be able to see this right above the definition in ruby)
-            response.result = variant<JSONNullObject, unique_ptr<Hover>>(JSONNullObject());
-            sendResponse(response);
-        } else {
-            auto markupContents = make_unique<MarkupContent>(MarkupKind::Markdown, resp->getRetType()->show(*finalGs));
-            response.result = make_unique<Hover>(move(markupContents));
-            sendResponse(response);
         }
 
-        return finalGs;
-    } else if (auto error = get_if<pair<unique_ptr<ResponseError>, unique_ptr<core::GlobalState>>>(&result)) {
-        // An error happened while setting up the query.
-        response.error = move(error->first);
-        sendResponse(response);
-        return move(error->second);
-    } else {
-        // Should never happen, but satisfy the compiler.
-        ENFORCE(false, "Internal error: setupLSPQueryByLoc returned invalid value.");
-        return nullptr;
+        auto clientHoverMarkupKind = config->getClientConfig().clientHoverMarkupKind;
+        if (auto sendResp = resp->isSend()) {
+            auto retType = sendResp->dispatchResult->returnType;
+            auto start = sendResp->dispatchResult.get();
+            if (start != nullptr && start->main.method.exists() && !start->main.receiver->isUntyped()) {
+                auto loc = start->main.method.data(gs)->loc();
+                if (loc.exists()) {
+                    documentation = findDocumentation(loc.file().data(gs).source(), loc.beginPos());
+                }
+            }
+            auto &constraint = sendResp->dispatchResult->main.constr;
+            if (constraint) {
+                retType = core::Types::instantiate(core::Context(gs, core::Symbols::root()), retType, *constraint);
+            }
+            string typeString;
+            if (sendResp->dispatchResult->main.method.exists() && sendResp->dispatchResult->main.method.isSynthetic()) {
+                // For synthetic methods, just show the return type
+                typeString = retType->showWithMoreInfo(gs);
+            } else {
+                typeString = methodInfoString(gs, retType, *sendResp->dispatchResult, constraint);
+            }
+            response->result = make_unique<Hover>(formatRubyMarkup(clientHoverMarkupKind, typeString, documentation));
+        } else if (auto defResp = resp->isDefinition()) {
+            string typeString = prettyTypeForMethod(gs, defResp->symbol, nullptr, defResp->retType.type, nullptr);
+            response->result = make_unique<Hover>(formatRubyMarkup(clientHoverMarkupKind, typeString, documentation));
+        } else if (auto constResp = resp->isConstant()) {
+            auto prettyType = prettyTypeForConstant(gs, constResp->symbol, resp->getRetType());
+            response->result = make_unique<Hover>(formatRubyMarkup(clientHoverMarkupKind, prettyType, documentation));
+        } else {
+            core::TypePtr retType = resp->getRetType();
+            // Some untyped arguments have null types.
+            if (!retType) {
+                retType = core::Types::untypedUntracked();
+            }
+            response->result = make_unique<Hover>(
+                formatRubyMarkup(clientHoverMarkupKind, retType->showWithMoreInfo(gs), documentation));
+        }
     }
+    return response;
 }
 } // namespace sorbet::realmain::lsp

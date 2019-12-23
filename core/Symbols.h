@@ -13,6 +13,7 @@
 namespace sorbet::core {
 class Symbol;
 class GlobalState;
+struct GlobalStateHash;
 class Type;
 class MutableContext;
 class Context;
@@ -26,7 +27,7 @@ class SerializerImpl;
 }
 class IntrinsicMethod {
 public:
-    virtual TypePtr apply(Context ctx, DispatchArgs args, const Type *thisType) const = 0;
+    virtual void apply(Context ctx, DispatchArgs args, const Type *thisType, DispatchResult &res) const = 0;
 };
 
 enum class Variance { CoVariant = 1, ContraVariant = -1, Invariant = 0 };
@@ -54,33 +55,28 @@ public:
         //
 
         // --- What type of symbol is this? ---
-        static constexpr u4 CLASS = 0x8000'0000;
+        static constexpr u4 CLASS_OR_MODULE = 0x8000'0000;
         static constexpr u4 METHOD = 0x4000'0000;
         static constexpr u4 FIELD = 0x2000'0000;
         static constexpr u4 STATIC_FIELD = 0x1000'0000;
-        static constexpr u4 METHOD_ARGUMENT = 0x0800'0000;
-        static constexpr u4 TYPE_ARGUMENT = 0x0400'0000;
-        static constexpr u4 TYPE_MEMBER = 0x0200'0000;
+        static constexpr u4 TYPE_ARGUMENT = 0x0800'0000;
+        static constexpr u4 TYPE_MEMBER = 0x0400'0000;
 
         // --- Applies to all types of Symbols ---
 
-        // Synthesized by C++ code in a DSL pass
-        static constexpr u4 DSL_SYNTHESIZED = 0x0000'0001;
+        // Synthesized by C++ code in a Rewriter pass
+        static constexpr u4 REWRITER_SYNTHESIZED = 0x0000'0001;
 
         // --- For our current symbol type, what flags does it have?
 
         // Class flags
-        static constexpr u4 CLASS_CLASS = 0x0000'0010;
-        static constexpr u4 CLASS_MODULE = 0x0000'0020;
-        static constexpr u4 CLASS_ABSTRACT = 0x0000'0040;
-        static constexpr u4 CLASS_INTERFACE = 0x0000'0080;
-        static constexpr u4 CLASS_LINEARIZATION_COMPUTED = 0x0000'0100;
-
-        // Method argument flags
-        static constexpr u4 ARGUMENT_OPTIONAL = 0x0000'0010;
-        static constexpr u4 ARGUMENT_KEYWORD = 0x0000'0020;
-        static constexpr u4 ARGUMENT_REPEATED = 0x0000'0040;
-        static constexpr u4 ARGUMENT_BLOCK = 0x0000'0080;
+        static constexpr u4 CLASS_OR_MODULE_CLASS = 0x0000'0010;
+        static constexpr u4 CLASS_OR_MODULE_MODULE = 0x0000'0020;
+        static constexpr u4 CLASS_OR_MODULE_ABSTRACT = 0x0000'0040;
+        static constexpr u4 CLASS_OR_MODULE_INTERFACE = 0x0000'0080;
+        static constexpr u4 CLASS_OR_MODULE_LINEARIZATION_COMPUTED = 0x0000'0100;
+        static constexpr u4 CLASS_OR_MODULE_FINAL = 0x0000'0200;
+        static constexpr u4 CLASS_OR_MODULE_SEALED = 0x0000'0400;
 
         // Method flags
         static constexpr u4 METHOD_PROTECTED = 0x0000'0010;
@@ -88,11 +84,12 @@ public:
         static constexpr u4 METHOD_OVERLOADED = 0x0000'0040;
         static constexpr u4 METHOD_ABSTRACT = 0x0000'0080;
         static constexpr u4 METHOD_GENERIC = 0x0000'0100;
-        static constexpr u4 METHOD_GENERATED_SIG = 0x0000'0200;
+        [[deprecated]] static constexpr u4 METHOD_GENERATED_SIG = 0x0000'0200;
         static constexpr u4 METHOD_OVERRIDABLE = 0x0000'0400;
         static constexpr u4 METHOD_FINAL = 0x0000'0800;
         static constexpr u4 METHOD_OVERRIDE = 0x0000'1000;
-        static constexpr u4 METHOD_IMPLEMENTATION = 0x0000'2000;
+        [[deprecated]] static constexpr u4 METHOD_IMPLEMENTATION = 0x0000'2000;
+        static constexpr u4 METHOD_INCOMPATIBLE_OVERRIDE = 0x0000'4000;
 
         // Type flags
         static constexpr u4 TYPE_COVARIANT = 0x0000'0010;
@@ -108,43 +105,41 @@ public:
     const InlinedVector<Loc, 2> &locs() const;
     void addLoc(const core::GlobalState &gs, core::Loc loc);
 
-    unsigned int hash(const GlobalState &gs) const;
-
-    inline InlinedVector<SymbolRef, 4> &arguments() {
-        ENFORCE(!isClass());
-        return argumentsOrMixins;
-    }
-
-    inline const InlinedVector<SymbolRef, 4> &arguments() const {
-        ENFORCE(!isClass());
-        return argumentsOrMixins;
-    }
+    u4 hash(const GlobalState &gs) const;
+    u4 methodShapeHash(const GlobalState &gs) const;
+    std::vector<u4> methodArgumentHash(const GlobalState &gs) const;
 
     std::vector<TypePtr> selfTypeArgs(const GlobalState &gs) const;
 
     // selfType and externalType return the type of an instance of this Symbol
-    // (which must be isClass()), if instantiated without specific type
+    // (which must be isClassOrModule()), if instantiated without specific type
     // parameters, as seen from inside or outside of the class, respectively.
     TypePtr selfType(const GlobalState &gs) const;
     TypePtr externalType(const GlobalState &gs) const;
 
     inline InlinedVector<SymbolRef, 4> &mixins() {
-        ENFORCE(isClass());
-        return argumentsOrMixins;
+        ENFORCE(isClassOrModule());
+        return mixins_;
     }
 
     inline const InlinedVector<SymbolRef, 4> &mixins() const {
-        ENFORCE(isClass());
-        return argumentsOrMixins;
+        ENFORCE(isClassOrModule());
+        return mixins_;
+    }
+
+    void addMixin(SymbolRef sym) {
+        ENFORCE(isClassOrModule());
+        mixins_.emplace_back(sym);
+        unsetClassLinearizationComputed();
     }
 
     inline InlinedVector<SymbolRef, 4> &typeMembers() {
-        ENFORCE(isClass());
+        ENFORCE(isClassOrModule());
         return typeParams;
     }
 
     inline const InlinedVector<SymbolRef, 4> &typeMembers() const {
-        ENFORCE(isClass());
+        ENFORCE(isClassOrModule());
         return typeParams;
     }
 
@@ -168,8 +163,8 @@ public:
     // TODO(dmitry) perf: most calls to this method could be eliminated as part of perf work.
     SymbolRef ref(const GlobalState &gs) const;
 
-    inline bool isClass() const {
-        return (flags & Symbol::Flags::CLASS) != 0;
+    inline bool isClassOrModule() const {
+        return (flags & Symbol::Flags::CLASS_OR_MODULE) != 0;
     }
 
     bool isSingletonClass(const GlobalState &gs) const;
@@ -194,20 +189,6 @@ public:
         return (flags & Symbol::Flags::TYPE_ARGUMENT) != 0;
     }
 
-    inline bool isMethodArgument() const {
-        return (flags & Symbol::Flags::METHOD_ARGUMENT) != 0;
-    }
-
-    inline bool isOptional() const {
-        ENFORCE(isMethodArgument());
-        return (flags & Symbol::Flags::ARGUMENT_OPTIONAL) != 0;
-    }
-
-    inline bool isRepeated() const {
-        ENFORCE(isMethodArgument());
-        return (flags & Symbol::Flags::ARGUMENT_REPEATED) != 0;
-    }
-
     inline bool isOverloaded() const {
         ENFORCE(isMethod());
         return (flags & Symbol::Flags::METHOD_OVERLOADED) != 0;
@@ -218,9 +199,9 @@ public:
         return (flags & Symbol::Flags::METHOD_ABSTRACT) != 0;
     }
 
-    inline bool isImplementation() const {
+    inline bool isIncompatibleOverride() const {
         ENFORCE(isMethod());
-        return (flags & Symbol::Flags::METHOD_IMPLEMENTATION) != 0;
+        return (flags & Symbol::Flags::METHOD_INCOMPATIBLE_OVERRIDE) != 0;
     }
 
     inline bool isGenericMethod() const {
@@ -237,23 +218,6 @@ public:
         ENFORCE(isMethod());
         return (flags & Symbol::Flags::METHOD_OVERRIDE) != 0;
     }
-
-    inline bool hasGeneratedSig() const {
-        ENFORCE(isMethod());
-        return (flags & Symbol::Flags::METHOD_GENERATED_SIG) != 0;
-    }
-
-    inline bool isKeyword() const {
-        ENFORCE(isMethodArgument());
-        return (flags & Symbol::Flags::ARGUMENT_KEYWORD) != 0;
-    }
-
-    inline bool isBlockArgument() const {
-        ENFORCE(isMethodArgument());
-        return (flags & Symbol::Flags::ARGUMENT_BLOCK) != 0;
-    }
-
-    bool isSyntheticBlockArgument() const;
 
     inline bool isCovariant() const {
         ENFORCE(isTypeArgument() || isTypeMember());
@@ -300,79 +264,87 @@ public:
         return (flags & Symbol::Flags::METHOD_PRIVATE) != 0;
     }
 
-    bool isBlockSymbol(const GlobalState &gs) const;
-
-    inline bool isClassModule() const {
-        ENFORCE(isClass());
-        if (flags & Symbol::Flags::CLASS_MODULE)
+    inline bool isClassOrModuleModule() const {
+        ENFORCE(isClassOrModule());
+        if (flags & Symbol::Flags::CLASS_OR_MODULE_MODULE)
             return true;
-        if (flags & Symbol::Flags::CLASS_CLASS)
+        if (flags & Symbol::Flags::CLASS_OR_MODULE_CLASS)
             return false;
         Exception::raise("Should never happen");
     }
 
-    inline bool isClassModuleSet() {
-        ENFORCE(isClass());
-        return flags & (Symbol::Flags::CLASS_MODULE | Symbol::Flags::CLASS_CLASS);
+    inline bool isClassModuleSet() const {
+        ENFORCE(isClassOrModule());
+        return flags & (Symbol::Flags::CLASS_OR_MODULE_MODULE | Symbol::Flags::CLASS_OR_MODULE_CLASS);
     }
 
-    inline bool isClassClass() const {
-        return !isClassModule();
+    inline bool isClassOrModuleClass() const {
+        return !isClassOrModuleModule();
     }
 
-    inline bool isClassAbstract() const {
-        ENFORCE(isClass());
-        return (flags & Symbol::Flags::CLASS_ABSTRACT) != 0;
+    inline bool isClassOrModuleAbstract() const {
+        ENFORCE(isClassOrModule());
+        return (flags & Symbol::Flags::CLASS_OR_MODULE_ABSTRACT) != 0;
     }
 
-    inline bool isClassInterface() const {
-        ENFORCE(isClass());
-        return (flags & Symbol::Flags::CLASS_INTERFACE) != 0;
+    inline bool isClassOrModuleInterface() const {
+        ENFORCE(isClassOrModule());
+        return (flags & Symbol::Flags::CLASS_OR_MODULE_INTERFACE) != 0;
     }
 
-    inline bool isClassLinearizationComputed() const {
-        ENFORCE(isClass());
-        return (flags & Symbol::Flags::CLASS_LINEARIZATION_COMPUTED) != 0;
+    inline bool isClassOrModuleLinearizationComputed() const {
+        ENFORCE(isClassOrModule());
+        return (flags & Symbol::Flags::CLASS_OR_MODULE_LINEARIZATION_COMPUTED) != 0;
     }
 
-    inline void setClass() {
+    inline bool isClassOrModuleFinal() const {
+        ENFORCE(isClassOrModule());
+        return (flags & Symbol::Flags::CLASS_OR_MODULE_FINAL) != 0;
+    }
+
+    inline bool isClassOrModuleSealed() const {
+        ENFORCE(isClassOrModule());
+        return (flags & Symbol::Flags::CLASS_OR_MODULE_SEALED) != 0;
+    }
+
+    inline void setClassOrModule() {
         ENFORCE(!isStaticField() && !isField() && !isMethod() && !isTypeArgument() && !isTypeMember());
-        flags = flags | Symbol::Flags::CLASS;
+        flags |= Symbol::Flags::CLASS_OR_MODULE;
     }
 
     inline void setStaticField() {
-        ENFORCE(!isClass() && !isField() && !isMethod() && !isTypeArgument() && !isTypeMember());
-        flags = flags | Symbol::Flags::STATIC_FIELD;
+        ENFORCE(!isClassOrModule() && !isField() && !isMethod() && !isTypeArgument() && !isTypeMember());
+        flags |= Symbol::Flags::STATIC_FIELD;
     }
 
     inline void setField() {
-        ENFORCE(!isClass() && !isStaticField() && !isMethod() && !isTypeArgument() && !isTypeMember());
-        flags = flags | Symbol::Flags::FIELD;
+        ENFORCE(!isClassOrModule() && !isStaticField() && !isMethod() && !isTypeArgument() && !isTypeMember());
+        flags |= Symbol::Flags::FIELD;
     }
 
     inline void setMethod() {
-        ENFORCE(!isClass() && !isStaticField() && !isField() && !isTypeArgument() && !isTypeMember());
-        flags = flags | Symbol::Flags::METHOD;
+        ENFORCE(!isClassOrModule() && !isStaticField() && !isField() && !isTypeArgument() && !isTypeMember());
+        flags |= Symbol::Flags::METHOD;
     }
 
     inline void setTypeArgument() {
-        ENFORCE(!isClass() && !isStaticField() && !isField() && !isMethod() && !isTypeMember());
-        flags = flags | Symbol::Flags::TYPE_ARGUMENT;
+        ENFORCE(!isClassOrModule() && !isStaticField() && !isField() && !isMethod() && !isTypeMember());
+        flags |= Symbol::Flags::TYPE_ARGUMENT;
     }
 
     inline void setTypeMember() {
-        ENFORCE(!isClass() && !isStaticField() && !isField() && !isMethod() && !isTypeArgument());
-        flags = flags | Symbol::Flags::TYPE_MEMBER;
+        ENFORCE(!isClassOrModule() && !isStaticField() && !isField() && !isMethod() && !isTypeArgument());
+        flags |= Symbol::Flags::TYPE_MEMBER;
     }
 
     inline void setIsModule(bool isModule) {
-        ENFORCE(isClass());
+        ENFORCE(isClassOrModule());
         if (isModule) {
-            ENFORCE((flags & Symbol::Flags::CLASS_CLASS) == 0);
-            flags = flags | Symbol::Flags::CLASS_MODULE;
+            ENFORCE((flags & Symbol::Flags::CLASS_OR_MODULE_CLASS) == 0);
+            flags |= Symbol::Flags::CLASS_OR_MODULE_MODULE;
         } else {
-            ENFORCE((flags & Symbol::Flags::CLASS_MODULE) == 0);
-            flags = flags | Symbol::Flags::CLASS_CLASS;
+            ENFORCE((flags & Symbol::Flags::CLASS_OR_MODULE_MODULE) == 0);
+            flags |= Symbol::Flags::CLASS_OR_MODULE_CLASS;
         }
     }
 
@@ -399,21 +371,6 @@ public:
         flags |= Symbol::Flags::TYPE_FIXED;
     }
 
-    inline void setOptional() {
-        ENFORCE(isMethodArgument());
-        flags |= Symbol::Flags::ARGUMENT_OPTIONAL;
-    }
-
-    inline void setKeyword() {
-        ENFORCE(isMethodArgument());
-        flags |= Symbol::Flags::ARGUMENT_KEYWORD;
-    }
-
-    inline void setRepeated() {
-        ENFORCE(isMethodArgument());
-        flags |= Symbol::Flags::ARGUMENT_REPEATED;
-    }
-
     inline void setOverloaded() {
         ENFORCE(isMethod());
         flags |= Symbol::Flags::METHOD_OVERLOADED;
@@ -424,9 +381,9 @@ public:
         flags |= Symbol::Flags::METHOD_ABSTRACT;
     }
 
-    inline void setImplementation() {
+    inline void setIncompatibleOverride() {
         ENFORCE(isMethod());
-        flags |= Symbol::Flags::METHOD_IMPLEMENTATION;
+        flags |= Symbol::Flags::METHOD_INCOMPATIBLE_OVERRIDE;
     }
 
     inline void setGenericMethod() {
@@ -449,19 +406,9 @@ public:
         flags |= Symbol::Flags::METHOD_OVERRIDE;
     }
 
-    inline bool isFinalMethod() {
+    inline bool isFinalMethod() const {
         ENFORCE(isMethod());
         return (flags & Symbol::Flags::METHOD_FINAL) != 0;
-    }
-
-    inline void setHasGeneratedSig() {
-        ENFORCE(isMethod());
-        flags |= Symbol::Flags::METHOD_GENERATED_SIG;
-    }
-
-    inline void setBlockArgument() {
-        ENFORCE(isMethodArgument());
-        flags |= Symbol::Flags::ARGUMENT_BLOCK;
     }
 
     inline void setPublic() {
@@ -481,18 +428,28 @@ public:
     }
 
     inline void setClassAbstract() {
-        ENFORCE(isClass());
-        flags |= Symbol::Flags::CLASS_ABSTRACT;
+        ENFORCE(isClassOrModule());
+        flags |= Symbol::Flags::CLASS_OR_MODULE_ABSTRACT;
     }
 
     inline void setClassInterface() {
-        ENFORCE(isClass());
-        flags |= Symbol::Flags::CLASS_INTERFACE;
+        ENFORCE(isClassOrModule());
+        flags |= Symbol::Flags::CLASS_OR_MODULE_INTERFACE;
     }
 
     inline void setClassLinearizationComputed() {
-        ENFORCE(isClass());
-        flags |= Symbol::Flags::CLASS_LINEARIZATION_COMPUTED;
+        ENFORCE(isClassOrModule());
+        flags |= Symbol::Flags::CLASS_OR_MODULE_LINEARIZATION_COMPUTED;
+    }
+
+    inline void setClassFinal() {
+        ENFORCE(isClassOrModule());
+        flags |= Symbol::Flags::CLASS_OR_MODULE_FINAL;
+    }
+
+    inline void setClassSealed() {
+        ENFORCE(isClassOrModule());
+        flags |= Symbol::Flags::CLASS_OR_MODULE_SEALED;
     }
 
     inline void setTypeAlias() {
@@ -503,22 +460,16 @@ public:
         // We should only be able to set the type alias bit on static fields.
         // But it's rather unweidly to ask "isStaticField() && isTypeAlias()" just to satisfy the ENFORCE.
         // To make things nicer, we relax the ENFORCE here to also allow asking whether "some constant" is a type alias.
-        ENFORCE(isClass() || isStaticField() || isTypeMember());
+        ENFORCE(isClassOrModule() || isStaticField() || isTypeMember());
         return isStaticField() && (flags & Symbol::Flags::STATIC_FIELD_TYPE_ALIAS) != 0;
     }
 
-    inline void setDSLSynthesized() {
-        flags |= Symbol::Flags::DSL_SYNTHESIZED;
+    inline void setRewriterSynthesized() {
+        flags |= Symbol::Flags::REWRITER_SYNTHESIZED;
     }
-    inline bool isDSLSynthesized() const {
-        return (flags & Symbol::Flags::DSL_SYNTHESIZED) != 0;
+    inline bool isRewriterSynthesized() const {
+        return (flags & Symbol::Flags::REWRITER_SYNTHESIZED) != 0;
     }
-
-    /*
-     * Given a METHOD_ARGUMENT symbol, return its type as observed by the method
-     * body that defined that argument
-     */
-    TypePtr argumentTypeAsSeenByImplementation(Context ctx, core::TypeConstraint &constr) const;
 
     SymbolRef findMember(const GlobalState &gs, NameRef name) const;
     SymbolRef findMemberNoDealias(const GlobalState &gs, NameRef name) const;
@@ -540,12 +491,18 @@ public:
 
     // Not printed when showing name table
     bool isHiddenFromPrinting(const GlobalState &gs) const;
-    std::string toStringWithTabs(const GlobalState &gs, int tabs = 0, bool showHidden = false,
-                                 bool useToString = false) const;
-    std::string toString(const GlobalState &gs) const {
-        return toStringWithTabs(gs);
+
+    std::string showRaw(const GlobalState &gs) const {
+        bool showFull = false;
+        bool showRaw = true;
+        return toStringWithOptions(gs, 0, showFull, showRaw);
     }
-    std::string toJSON(const GlobalState &gs, int tabs = 0, bool showHidden = false) const;
+    std::string toString(const GlobalState &gs) const {
+        bool showFull = false;
+        bool showRaw = false;
+        return toStringWithOptions(gs, 0, showFull, showRaw);
+    }
+    std::string toJSON(const GlobalState &gs, int tabs = 0, bool showFull = false) const;
     // Renders the full name of this Symbol in a form suitable for user display.
     std::string show(const GlobalState &gs) const;
 
@@ -559,31 +516,46 @@ public:
     // Returns attached class or noSymbol if it does not exist
     SymbolRef attachedClass(const GlobalState &gs) const;
 
-    SymbolRef dealias(const GlobalState &gs, int depthLimit = 42) const;
+    SymbolRef topAttachedClass(const GlobalState &gs) const;
+
+    void recordSealedSubclass(MutableContext ctx, SymbolRef subclass);
+    const InlinedVector<Loc, 2> &sealedLocs(const GlobalState &gs) const;
+    TypePtr sealedSubclassesToUnion(const Context ctx) const;
+
+    // if dealiasing fails here, then we return Untyped instead
+    SymbolRef dealias(const GlobalState &gs, int depthLimit = 42) const {
+        return dealiasWithDefault(gs, depthLimit, Symbols::untyped());
+    }
+    // if dealiasing fails here, then we return a bad alias method stub instead
+    SymbolRef dealiasMethod(const GlobalState &gs, int depthLimit = 42) const {
+        return dealiasWithDefault(gs, depthLimit, core::Symbols::Sorbet_Private_Static_badAliasMethodStub());
+    }
+
+    SymbolRef dealiasWithDefault(const GlobalState &gs, int depthLimit, SymbolRef def) const;
 
     bool ignoreInHashing(const GlobalState &gs) const;
 
     SymbolRef owner;
-    SymbolRef superClassOrRebind; // methods and method arugments store rebind here
+    SymbolRef superClassOrRebind; // method arugments store rebind here
 
     inline SymbolRef superClass() const {
-        ENFORCE(isClass());
+        ENFORCE(isClassOrModule());
         return superClassOrRebind;
     }
 
     inline void setSuperClass(SymbolRef claz) {
-        ENFORCE(isClass());
+        ENFORCE(isClassOrModule());
         superClassOrRebind = claz;
     }
 
-    inline SymbolRef rebind() const {
-        ENFORCE(isMethodArgument() || isMethod());
-        return superClassOrRebind;
+    inline void setReBind(SymbolRef rebind) {
+        ENFORCE(isMethod());
+        superClassOrRebind = rebind;
     }
 
-    inline void setReBind(SymbolRef rebind) {
-        ENFORCE(isMethodArgument() || isMethod());
-        superClassOrRebind = rebind;
+    SymbolRef rebind() const {
+        ENFORCE(isMethod());
+        return superClassOrRebind;
     }
 
     u4 flags = Flags::NONE;
@@ -591,9 +563,30 @@ public:
     NameRef name;         // todo: move out? it should not matter but it's important for name resolution
     TypePtr resultType;
 
-    UnorderedMap<NameRef, SymbolRef>
-        members; // TODO: replace with https://github.com/greg7mdp/sparsepp . Should be only in ClassSymbol
-    // optimize for absence
+    bool hasSig() const {
+        ENFORCE(isMethod());
+        return resultType != nullptr;
+    }
+
+    UnorderedMap<NameRef, SymbolRef> members_;
+    std::vector<ArgInfo> arguments_;
+
+    UnorderedMap<NameRef, SymbolRef> &members() {
+        return members_;
+    };
+    const UnorderedMap<NameRef, SymbolRef> &members() const {
+        return members_;
+    };
+
+    std::vector<ArgInfo> &arguments() {
+        ENFORCE(isMethod());
+        return arguments_;
+    }
+
+    const std::vector<ArgInfo> &arguments() const {
+        ENFORCE(isMethod());
+        return arguments_;
+    }
 
     std::vector<std::pair<NameRef, SymbolRef>> membersStableOrderSlow(const GlobalState &gs) const;
 
@@ -602,7 +595,6 @@ public:
     SymbolRef enclosingMethod(const GlobalState &gs) const;
 
     SymbolRef enclosingClass(const GlobalState &gs) const;
-    std::string argumentName(const GlobalState &gs) const;
 
     // All `IntrinsicMethod`s in sorbet should be statically-allocated, which is
     // why raw pointers are safe.
@@ -611,6 +603,10 @@ public:
 private:
     friend class serialize::SerializerImpl;
     friend class GlobalState;
+
+    std::string toStringWithOptions(const GlobalState &gs, int tabs = 0, bool showFull = false,
+                                    bool showRaw = false) const;
+
     FuzzySearchResult findMemberFuzzyMatchUTF8(const GlobalState &gs, NameRef name, int betterThan = -1) const;
     std::vector<FuzzySearchResult> findMemberFuzzyMatchConstant(const GlobalState &gs, NameRef name,
                                                                 int betterThan = -1) const;
@@ -618,13 +614,13 @@ private:
     /*
      * mixins and superclasses: `superClass` is *not* included in the
      *   `argumentsOrMixins` list. `superClass` may not exist even if
-     *   `isClass()`, which implies that this symbol is either a module or one
+     *   `isClassOrModule()`, which implies that this symbol is either a module or one
      *   of our magic synthetic classes. During parsing+naming, `superClass ==
      *   todo()` iff every definition we've seen for this class has had an
      *   implicit superclass (`class Foo` with no `< Parent`); Once we hit
      *   Resolver::finalize(), these will be rewritten to `Object()`.
      */
-    InlinedVector<SymbolRef, 4> argumentsOrMixins;
+    InlinedVector<SymbolRef, 4> mixins_;
 
     /** For Class or module - ordered type members of the class,
      * for method - ordered type generic type arguments of the class
@@ -634,6 +630,11 @@ private:
 
     SymbolRef findMemberTransitiveInternal(const GlobalState &gs, NameRef name, u4 mask, u4 flags,
                                            int maxDepth = 100) const;
+
+    inline void unsetClassLinearizationComputed() {
+        ENFORCE(isClassOrModule());
+        flags &= ~Symbol::Flags::CLASS_OR_MODULE_LINEARIZATION_COMPUTED;
+    }
 };
 // CheckSize(Symbol, 144, 8); // This is under too much churn to be worth checking
 

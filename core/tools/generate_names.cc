@@ -28,11 +28,11 @@ NameDef names[] = {
     {"initialize"},
     {"andAnd", "&&"},
     {"orOr", "||"},
-    {"to_s"},
-    {"to_a"},
-    {"to_h"},
-    {"to_hash"},
-    {"to_proc"},
+    {"toS", "to_s"},
+    {"toA", "to_a"},
+    {"toH", "to_h"},
+    {"toHash", "to_hash"},
+    {"toProc", "to_proc"},
     {"concat"},
     {"key_p", "key?"},
     {"intern"},
@@ -50,6 +50,7 @@ NameDef names[] = {
     {"backtick", "`"},
     {"slice"},
     {"defined_p", "defined?"},
+    {"undef"},
     {"each"},
 
     // used in CFG for temporaries
@@ -78,6 +79,7 @@ NameDef names[] = {
     {"finalReturn", "<finalReturn>"},
     {"cfgAlias", "<cfgAlias>"},
     {"magic", "<magic>"},
+    {"tConstTemp", "<tConstTemp>"},
     // end CFG temporaries
 
     {"include"},
@@ -93,20 +95,21 @@ NameDef names[] = {
     {"implementation"},
     {"override_", "override"},
     {"overridable"},
+    {"allowIncompatible", "allow_incompatible"},
 
     // Sig builders
     {"bind"},
     {"params"},
-    {"final"},
+    {"final_", "final"},
     {"returns"},
     {"void_", "void"},
     {"checked"},
-    {"soft"},
-    {"generated"},
+    {"onFailure", "on_failure"},
 
     {"all"},
     {"any"},
     {"enum_", "enum"},
+    {"enums"},
     {"nilable"},
     {"proc"},
     {"untyped"},
@@ -115,6 +118,8 @@ NameDef names[] = {
     {"class_", "class"},
     {"classOf", "class_of"},
     {"selfType", "self_type"},
+    {"experimentalAttachedClass", "experimental_attached_class"},
+    {"attachedClass", "attached_class"},
     {"coerce"},
 
     {"assertType", "assert_type!"},
@@ -124,7 +129,10 @@ NameDef names[] = {
     {"must"},
     {"declareInterface", "interface!"},
     {"declareAbstract", "abstract!"},
+    {"declareFinal", "final!"},
+    {"declareSealed", "sealed!"},
     {"revealType", "reveal_type"},
+    {"absurd"},
     // end T keywords
 
     // Ruby DSL methods which we understand
@@ -138,6 +146,13 @@ NameDef names[] = {
     {"privateClassMethod", "private_class_method"},
     {"moduleFunction", "module_function"},
     {"aliasMethod", "alias_method"},
+
+    {"flatfile"},
+    {"from"},
+    {"field"},
+    {"pattern"},
+
+    // type alias names
     {"typeAlias", "type_alias"},
     {"typeMember", "type_member"},
     {"typeTemplate", "type_template"},
@@ -145,14 +160,17 @@ NameDef names[] = {
     {"contravariant", "in"},
     {"invariant", "<invariant>"},
     {"fixed"},
+    {"lower"},
+    {"upper"},
 
     {"prop"},
-    {"token_prop"},
-    {"timestamped_token_prop"},
-    {"created_prop"},
-    {"merchant_prop"},
-    {"encrypted_prop"},
+    {"tokenProp", "token_prop"},
+    {"timestampedTokenProp", "timestamped_token_prop"},
+    {"createdProp", "created_prop"},
+    {"merchantProp", "merchant_prop"},
+    {"encryptedProp", "encrypted_prop"},
     {"array"},
+    {"delegate"},
     {"type"},
     {"optional"},
     {"immutable"},
@@ -163,6 +181,8 @@ NameDef names[] = {
     {"created"},
     {"merchant"},
     {"foreign"},
+    {"computedBy", "computed_by"},
+    {"factory"},
     {"Chalk", "Chalk", true},
     {"ODM", "ODM", true},
     {"Mutator", "Mutator", true},
@@ -171,9 +191,26 @@ NameDef names[] = {
     {"ArrayMutator", "ArrayMutator", true},
     {"DocumentMutator", "DocumentMutator", true},
 
+    {"prefix"},
+    {"to"},
+
+    {"mattrAccessor", "mattr_accessor"},
+    {"mattrReader", "mattr_reader"},
+    {"mattrWriter", "mattr_writer"},
+    {"cattrAccessor", "cattr_accessor"},
+    {"cattrReader", "cattr_reader"},
+    {"cattrWriter", "cattr_writer"},
+    {"instanceReader", "instance_reader"},
+    {"instanceWriter", "instance_writer"},
+    {"instanceAccessor", "instance_accessor"},
+    {"instancePredicate", "instance_predicate"},
+    {"classAttribute", "class_attribute"},
+
     {"describe"},
     {"it"},
     {"before"},
+    {"after"},
+    {"afterAngles", "<after>"},
 
     {"dslOptional", "dsl_optional"},
     {"dslRequired", "dsl_required"},
@@ -186,6 +223,8 @@ NameDef names[] = {
     {"registered"},
     {"instanceRegistered", "<instance_registered>"},
     {"helpers"},
+
+    {"keywordInit", "keyword_init"},
 
     {"DB", "DB", true},
     {"Model", "Model", true},
@@ -206,11 +245,9 @@ NameDef names[] = {
     {"ActiveRecord", "ActiveRecord", true},
     {"Migration", "Migration", true},
     {"Compatibility", "Compatibility", true},
-    // end DSL methods
 
-    // Our own special methods which have special meaning
-    {"hardAssert", "hard_assert"}, // Kernel.hard_assert
-    // end special methods
+    {"instance"},
+    // end DSL methods
 
     // The next two names are used as keys in SymbolInfo::members to store
     // pointers up and down the singleton-class hierarchy. If A's singleton
@@ -223,6 +260,10 @@ NameDef names[] = {
     // object"
     {"singleton", "<singleton class>"},
     {"attached", "<attached class>"},
+
+    // This behaves like the above two names, in the sense that we use a member
+    // on a class to lookup an associated symbol with some extra info.
+    {"sealedSubclasses", "sealed_subclasses"},
 
     // This name is used as a key in SymbolInfo::members to store the module
     // registered via the `mixes_in_class_method` name.
@@ -257,6 +298,7 @@ NameDef names[] = {
     {"buildArray", "<build-array>"},
     {"splat", "<splat>"},
     {"expandSplat", "<expand-splat>"},
+    {"suggestType", "<suggest-type>"},
     {"arg0"},
     {"arg1"},
     {"arg2"},
@@ -264,9 +306,10 @@ NameDef names[] = {
     {"Elem", "Elem", true},
     {"keepForIde", "keep_for_ide"},
     {"keepForTypechecking", "keep_for_typechecking"},
+    {"unresolvedAncestors", "<unresolved-ancestors>"},
 
-    {"is_a_p", "is_a?"},
-    {"kind_of", "kind_of?"},
+    {"isA_p", "is_a?"},
+    {"kindOf_p", "kind_of?"},
     {"lessThan", "<"},
     {"eqeq", "=="},
     {"neq", "!="},
@@ -283,8 +326,9 @@ NameDef names[] = {
     // Enumerable#flat_map has special-case logic in Infer
     {"flatMap", "flat_map"},
 
-    // Array#flatten and #compact are also custom-implemented
+    // Array#flatten, #product and #compact are also custom-implemented
     {"flatten"},
+    {"product"},
     {"compact"},
 
     {"staticInit", "<static-init>"},
@@ -293,7 +337,8 @@ NameDef names[] = {
     {"callWithSplat", "<call-with-splat>"},
     {"callWithBlock", "<call-with-block>"},
     {"callWithSplatAndBlock", "<call-with-splat-and-block>"},
-    {"enumerable_to_h"},
+    {"enumerableToH", "enumerable_to_h"},
+    {"selfNew", "<self-new>"},
 
     // GlobalState initEmpty()
     {"Top", "<any>", true},
@@ -310,6 +355,7 @@ NameDef names[] = {
     {"Proc", "Proc", true},
     {"TrueClass", "TrueClass", true},
     {"FalseClass", "FalseClass", true},
+    {"Boolean", "Boolean", true},
     {"NilClass", "NilClass", true},
     {"Class", "Class", true},
     {"Module", "Module", true},
@@ -326,17 +372,22 @@ NameDef names[] = {
     {"Rational", "Rational", true},
     // A magic non user-creatable class with methods to keep state between passes
     {"Magic", "<Magic>", true},
+    // A magic non user-creatable class for mimicing the decl builder during cfg
+    // construction
+    {"DeclBuilderForProcs", "<DeclBuilderForProcs>", true},
     {"Enumerable", "Enumerable", true},
+    {"Enumerator", "Enumerator", true},
+    {"Lazy", "Lazy", true},
     {"Set", "Set", true},
     {"Struct", "Struct", true},
     {"File", "File", true},
     {"Static", "Static", true},
     {"StubModule", "StubModule", true},
-    {"StubAncestor", "StubAncestor", true},
+    {"StubSuperClass", "StubSuperClass", true},
+    {"StubMixin", "StubMixin", true},
     {"Configatron", "Configatron", true},
     {"Store", "Store", true},
     {"RootStore", "RootStore", true},
-    {"Sinatra", "Sinatra", true},
     {"Base", "Base", true},
     {"Void", "Void", true},
     {"TypeAlias", "<TypeAlias>", true},
@@ -358,6 +409,13 @@ NameDef names[] = {
     {"RuntimeProfiled", "RuntimeProfiled", true},
     {"UndeclaredFieldStub", "<undeclared-field-stub>", true},
     {"badAliasMethodStub", "<bad-method-alias-stub>"},
+    {"Helpers", "Helpers", true},
+    {"Net", "Net", true},
+    {"IMAP", "IMAP", true},
+    {"Protocol", "Protocol", true},
+    {"WithoutRuntime", "WithoutRuntime", true},
+    {"Singleton", "Singleton", true},
+    {"AttachedClass", "<AttachedClass>", true},
 };
 
 void emit_name_header(ostream &out, NameDef &name) {

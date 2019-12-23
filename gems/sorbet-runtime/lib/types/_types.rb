@@ -10,7 +10,7 @@
 #   |_| \__, | .__/ \___||___/
 #       |___/|_|
 #
-# Docs at http://go/types.
+# Docs at https://sorbet.org/docs/sigs
 #
 # Types that you can pass to `sig`:
 #
@@ -65,6 +65,15 @@ module T
     T::Types::SelfType.new
   end
 
+  # TODO(jez) Matches the instance type in a singleton-class context
+  def self.attached_class
+    T::Types::AttachedClassType.new
+  end
+  # Matches the instance type in a singleton-class context
+  def self.experimental_attached_class
+    T::Types::AttachedClassType.new
+  end
+
   # Matches any class that subclasses or includes the provided class
   # or module
   def self.class_of(klass)
@@ -75,11 +84,11 @@ module T
   ## END OF THE METHODS TO PASS TO `sig`.
 
 
-  # Constructs a type alias. Used to create a short name for a larger
-  # type. In Ruby this is just equivalent to assignment, but this is
-  # needed for support by the static checker. Example usage:
+  # Constructs a type alias. Used to create a short name for a larger type. In Ruby this returns a
+  # wrapper that contains a proc that is evaluated to get the underlying type. This syntax however
+  # is needed for support by the static checker. Example usage:
   #
-  #  NilableString = T.type_alias(T.nilable(String))
+  #  NilableString = T.type_alias {T.nilable(String)}
   #
   #  sig {params(arg: NilableString, default: String).returns(String)}
   #  def or_else(arg, default)
@@ -88,8 +97,14 @@ module T
   #
   # The name of the type alias is not preserved; Error messages will
   # be printed with reference to the underlying type.
-  def self.type_alias(type)
-    T::Utils.coerce(type)
+  #
+  # TODO Remove `type` parameter. This was left in to make life easier while migrating.
+  def self.type_alias(type=nil, &blk)
+    if blk
+      T::Private::Types::TypeAlias.new(blk)
+    else
+      T::Utils.coerce(type)
+    end
   end
 
   # References a type paramater which was previously defined with
@@ -113,8 +128,6 @@ module T
   # exception at runtime if the value doesn't match the type.
   #
   # Compared to `T.let`, `T.cast` is _trusted_ by static system.
-  #
-  # Does not support unwrapping T::InterfaceWrapper; for that, use dynamic_cast.
   def self.cast(value, type, checked: true)
     return value unless checked
 
@@ -130,27 +143,21 @@ module T
   #
   # If `checked` is true, raises an exception at runtime if the value
   # doesn't match the type.
-  #
-  # Does not support unwrapping T::InterfaceWrapper; for that, use dynamic_cast.
   def self.let(value, type, checked: true)
     return value unless checked
 
     Private::Casts.cast(value, type, cast_method: "T.let")
   end
 
-
   # Tells the typechecker to ensure that `value` is of type `type` (if not, the typechecker will
   # fail). Use this for debugging typechecking errors, or to ensure that type information is
   # statically known and being checked appropriately. If `checked` is true, raises an exception at
   # runtime if the value doesn't match the type.
-  #
-  # Does not support unwrapping T::InterfaceWrapper; for that, use dynamic_cast.
   def self.assert_type!(value, type, checked: true)
     return value unless checked
 
     Private::Casts.cast(value, type, cast_method: "T.assert_type!")
   end
-
 
   # For the static type checker, strips all type information from a value
   # and returns the same value, but statically-typed as `T.untyped`.
@@ -184,28 +191,16 @@ module T
   # Intended to be used to promise sorbet that a given nilable value happens
   # to contain a non-nil value at this point.
   #
-  # sig {params(arg: T.nilable(A), msg: T.nilable(String)).returns(A)}
-  def self.must(arg, msg=nil)
-    begin
-      if msg
-        if !T.unsafe(msg).is_a?(String)
-          raise TypeError.new("T.must expects a string as second argument")
-        end
-      else
-        msg = "Passed `nil` into T.must"
-      end
-      raise TypeError.new(msg) if arg.nil?
-      arg
-    rescue TypeError => e # raise into rescue to ensure e.backtrace is populated
-      T::Private::ErrorHandler.handle_inline_type_error(e)
-      arg
-    end
-  end
+  # sig {params(arg: T.nilable(A)).returns(A)}
+  def self.must(arg)
+    return arg if arg
+    return arg if arg == false
 
-  # Attempts to cast a value to a type at runtime. Unwraps `T::InterfaceWrapper` as
-  # necessary. If the cast is not possible, returns `nil`.
-  def self.dynamic_cast(obj, type)
-    T::InterfaceWrapper.dynamic_cast(obj, type)
+    begin
+      raise TypeError.new("Passed `nil` into T.must")
+    rescue TypeError => e # raise into rescue to ensure e.backtrace is populated
+      T::Configuration.inline_type_error_handler(e)
+    end
   end
 
   # A way to ask Sorbet to show what type it thinks an expression has.
@@ -215,23 +210,63 @@ module T
     value
   end
 
+  # A way to ask Sorbet to prove that a certain branch of control flow never
+  # happens. Commonly used to assert that a case or if statement exhausts all
+  # possible cases.
+  def self.absurd(value)
+    msg = "Control flow reached T.absurd."
+
+    case value
+    when Kernel
+      msg += " Got value: #{value}"
+    end
+
+    begin
+      raise TypeError.new(msg)
+    rescue TypeError => e # raise into rescue to ensure e.backtrace is populated
+      T::Configuration.inline_type_error_handler(e)
+    end
+  end
+
   ### Generic classes ###
 
   module Array
     def self.[](type)
-      T::Types::TypedArray.new(type)
+      if type.is_a?(T::Types::Untyped)
+        T::Types::TypedArray::Untyped.new
+      else
+        T::Types::TypedArray.new(type)
+      end
     end
   end
 
   module Hash
     def self.[](keys, values)
-      T::Types::TypedHash.new(keys: keys, values: values)
+      if keys.is_a?(T::Types::Untyped) && values.is_a?(T::Types::Untyped)
+        T::Types::TypedHash::Untyped.new
+      else
+        T::Types::TypedHash.new(keys: keys, values: values)
+      end
     end
   end
 
   module Enumerable
     def self.[](type)
-      T::Types::TypedEnumerable.new(type)
+      if type.is_a?(T::Types::Untyped)
+        T::Types::TypedEnumerable::Untyped.new
+      else
+        T::Types::TypedEnumerable.new(type)
+      end
+    end
+  end
+
+  module Enumerator
+    def self.[](type)
+      if type.is_a?(T::Types::Untyped)
+        T::Types::TypedEnumerator::Untyped.new
+      else
+        T::Types::TypedEnumerator.new(type)
+      end
     end
   end
 
@@ -243,7 +278,11 @@ module T
 
   module Set
     def self.[](type)
-      T::Types::TypedSet.new(type)
+      if type.is_a?(T::Types::Untyped)
+        T::Types::TypedSet::Untyped.new
+      else
+        T::Types::TypedSet.new(type)
+      end
     end
   end
 end

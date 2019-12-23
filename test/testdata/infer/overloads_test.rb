@@ -1,5 +1,6 @@
 # typed: true
-# disable-fast-path: true
+# disable-stress-incremental: true
+
 # MutableContext::permitOverloadDefinitions is aware of this file name. Don't rename this file.
 class HasOverloads
   extend T::Sig
@@ -52,6 +53,8 @@ class HasOverloads
     .returns(Symbol)
   end
   def invalid_overloaded(a:, b:);
+    #                    ^^ error: Bad parameter ordering for `a`, expected `b` instead
+    #                        ^^ error: Bad parameter ordering for `b`, expected `a` instead
     make_untyped
   end
 end
@@ -75,10 +78,10 @@ class Foo
     T.assert_type!(h.overloaded("s"), String)
     T.assert_type!(h.overloaded(Exception.new), NilClass)
     T.assert_type!(h.overloaded(self.class), Symbol)
-    h.overloaded(1) # error: `Integer(1)` doesn't match `String` for argument `_`
+    h.overloaded(1) # error: Expected `String` but found `Integer(1)` for argument `_`
                     # should ask for string
-    h.overloaded("1", 2) # error: `String("1")` doesn't match `Class` for argument `_`
-  # ^^^^^^^^^^^^^^^^^^^^ error: `Integer(2)` doesn't match `String` for argument `_1`
+    h.overloaded("1", 2) # error: Expected `Class` but found `String("1")` for argument `_`
+  # ^^^^^^^^^^^^^^^^^^^^ error: Expected `String` but found `Integer(2)` for argument `_1`
 
     g = OverloadAndGenerics[Integer].new
     T.assert_type!(g.overloaded("hi"), String)

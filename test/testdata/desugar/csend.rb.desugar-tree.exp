@@ -1,0 +1,103 @@
+class <emptyTree><<C <root>>> < ()
+  def test_csend<<C <todo sym>>>(&<blk>)
+    begin
+      begin
+        <assignTemp>$2 = <self>.foo()
+        if <assignTemp>$2.==(nil)
+          nil
+        else
+          <assignTemp>$2.bar()
+        end
+      end
+      begin
+        <assignTemp>$3 = <self>.foo()
+        if <assignTemp>$3.==(nil)
+          nil
+        else
+          <assignTemp>$3.bar() do |x|
+            x
+          end
+        end
+      end
+      begin
+        <assignTemp>$4 = <self>.foo()
+        if <assignTemp>$4.==(nil)
+          nil
+        else
+          <assignTemp>$4.bar=(5)
+        end
+      end
+      begin
+        <assignTemp>$5 = <self>.foo()
+        if <assignTemp>$5.==(nil)
+          nil
+        else
+          begin
+            bar$6 = <assignTemp>$5
+            bar$6.bar=(bar$6.bar().+(5))
+          end
+        end
+      end
+      begin
+        <assignTemp>$7 = <self>.foo()
+        if <assignTemp>$7.==(nil)
+          nil
+        else
+          begin
+            bar$8 = <assignTemp>$7
+            bar$9 = bar$8.bar()
+            if bar$9
+              bar$8.bar=(5)
+            else
+              bar$9
+            end
+          end
+        end
+      end
+      begin
+        <assignTemp>$10 = <self>.foo()
+        if <assignTemp>$10.==(nil)
+          nil
+        else
+          begin
+            bar$11 = <assignTemp>$10
+            bar$12 = bar$11.bar()
+            if bar$12
+              bar$12
+            else
+              bar$11.bar=(5)
+            end
+          end
+        end
+      end
+    end
+  end
+
+  begin
+    <assignTemp>$2 = <emptyTree>::<C BasicObject>.new()
+    if <assignTemp>$2.==(nil)
+      nil
+    else
+      <assignTemp>$2.__id__()
+    end
+  end
+
+  class <emptyTree>::<C A><<C <todo sym>>> < (::<todo sym>)
+    <self>.extend(<emptyTree>::<C T>::<C Sig>)
+
+    <self>.sig() do ||
+      <self>.params({:"x" => <emptyTree>::<C T>.any(<emptyTree>::<C FalseClass>, <emptyTree>::<C NilClass>)}).returns(<emptyTree>::<C T>.nilable(<emptyTree>::<C TrueClass>))
+    end
+
+    def foo<<C <todo sym>>>(x, &<blk>)
+      begin
+        <assignTemp>$2 = x
+        if <assignTemp>$2.==(nil)
+          nil
+        else
+          <assignTemp>$2.|(true)
+        end
+      end
+    end
+  end
+end

@@ -1,9 +1,0 @@
-class <emptyTree><<C <U <root>>>> < ()
-  def <U test_strings><<C <U <todo sym>>>>(&<U <blk>>)
-    begin
-      ""
-      "foo"
-      "foo".<U concat>(1.<U to_s>()).<U to_s>()
-    end
-  end
-end

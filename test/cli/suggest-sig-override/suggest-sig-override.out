@@ -11,15 +11,14 @@ extend T::Sig
 # - overridable
 # - abstract
 # - override
-# - implementation
 
 class ParentNoSig
   extend T::Sig
-  sig {generated.returns(NilClass)}
+  sig {returns(NilClass)}
   def foo; end
 end
 class ChildNoSig < ParentNoSig
-  sig {generated.returns(NilClass)}
+  sig {returns(NilClass)}
   def foo; end
 end
 
@@ -29,7 +28,7 @@ class ParentStandardSig
   def foo; end
 end
 class ChildStandardSig < ParentStandardSig
-  sig {generated.void}
+  sig {void}
   def foo; end
 end
 
@@ -39,18 +38,19 @@ class ParentOverridable
   def foo; end
 end
 class ChildOverridable < ParentOverridable
-  sig {generated.override.void}
+  sig {override.void}
   def foo; end
 end
 
 class ParentAbstract
+  extend T::Helpers
   extend T::Sig
   abstract!
   sig {abstract.void}
   def foo; end
 end
 class ChildAbstract < ParentAbstract
-  sig {generated.implementation.void}
+  sig {override.void}
   def foo; end
 end
 
@@ -65,22 +65,23 @@ class ParentOverride < GrandParentOverride
   def foo; end
 end
 class ChildOverride < ParentOverride
-  sig {generated.override.void}
+  sig {override.void}
   def foo; end
 end
 
 class GrandParentImplementation
   # Only need this class to allow `implementation` below.
+  extend T::Helpers
   extend T::Sig
   abstract!
   sig {abstract.void}
   def foo; end
 end
 class ParentImplementation < GrandParentImplementation
-  sig {implementation.generated.overridable.void}
+  sig {override.void}
   def foo; end
 end
 class ChildImplementation < ParentImplementation
-  sig {generated.override.void}
+  sig {override.void}
   def foo; end
 end

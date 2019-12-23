@@ -1,32 +1,11 @@
 #include "core/lsp/QueryResponse.h"
+#include "core/ErrorQueue.h"
 #include "core/GlobalState.h"
+
 template class std::unique_ptr<sorbet::core::lsp::QueryResponse>;
 
 using namespace std;
 namespace sorbet::core::lsp {
-
-SendResponse::SendResponse(core::DispatchResult::ComponentVec dispatchComponents,
-                           const std::shared_ptr<core::TypeConstraint> &constraint, core::Loc termLoc,
-                           core::NameRef name, core::TypeAndOrigins receiver, core::TypeAndOrigins retType)
-    : dispatchComponents(std::move(dispatchComponents)), constraint(constraint), termLoc(termLoc), name(name),
-      receiver(receiver), retType(retType) {}
-
-IdentResponse::IdentResponse(core::SymbolRef owner, core::Loc termLoc, core::LocalVariable variable,
-                             core::TypeAndOrigins retType)
-    : owner(owner), termLoc(termLoc), variable(variable), retType(retType) {}
-
-LiteralResponse::LiteralResponse(core::SymbolRef owner, core::Loc termLoc, core::TypeAndOrigins retType)
-    : owner(owner), termLoc(termLoc), retType(retType) {}
-
-ConstantResponse::ConstantResponse(core::SymbolRef owner, core::DispatchResult::ComponentVec dispatchComponents,
-                                   core::Loc termLoc, core::NameRef name, core::TypeAndOrigins receiver,
-                                   core::TypeAndOrigins retType)
-    : owner(owner), dispatchComponents(std::move(dispatchComponents)), termLoc(termLoc), name(name), receiver(receiver),
-      retType(retType) {}
-
-DefinitionResponse::DefinitionResponse(core::DispatchResult::ComponentVec dispatchComponents, core::Loc termLoc,
-                                       core::NameRef name, core::TypeAndOrigins retType)
-    : dispatchComponents(std::move(dispatchComponents)), termLoc(termLoc), name(name), retType(retType) {}
 
 void QueryResponse::pushQueryResponse(core::Context ctx, QueryResponseVariant response) {
     ctx.state.errorQueue->pushQueryResponse(make_unique<QueryResponse>(std::move(response)));
@@ -50,8 +29,16 @@ const ConstantResponse *QueryResponse::isConstant() const {
     return get_if<ConstantResponse>(&response);
 }
 
+const FieldResponse *QueryResponse::isField() const {
+    return get_if<FieldResponse>(&response);
+}
+
 const DefinitionResponse *QueryResponse::isDefinition() const {
     return get_if<DefinitionResponse>(&response);
+}
+
+const EditResponse *QueryResponse::isEdit() const {
+    return get_if<EditResponse>(&response);
 }
 
 core::Loc QueryResponse::getLoc() const {
@@ -63,8 +50,12 @@ core::Loc QueryResponse::getLoc() const {
         return literal->termLoc;
     } else if (auto constant = isConstant()) {
         return constant->termLoc;
+    } else if (auto field = isField()) {
+        return field->termLoc;
     } else if (auto def = isDefinition()) {
         return def->termLoc;
+    } else if (auto edit = isEdit()) {
+        return edit->loc;
     } else {
         return core::Loc::none();
     }
@@ -74,29 +65,34 @@ core::TypePtr QueryResponse::getRetType() const {
     if (auto ident = isIdent()) {
         return ident->retType.type;
     } else if (auto send = isSend()) {
-        return send->retType.type;
+        return send->dispatchResult->returnType;
     } else if (auto literal = isLiteral()) {
         return literal->retType.type;
     } else if (auto constant = isConstant()) {
         return constant->retType.type;
+    } else if (auto field = isField()) {
+        return field->retType.type;
     } else if (auto def = isDefinition()) {
         return def->retType.type;
     } else {
-        return core::TypePtr();
+        // Should never happen, as the above checks should be exhaustive.
+        Exception::raise("QueryResponse is of type that does not have retType.");
     }
 }
 
-const core::DispatchResult::ComponentVec emptyDispatchComponents;
-
-const core::DispatchResult::ComponentVec &QueryResponse::getDispatchComponents() const {
-    if (auto send = get_if<SendResponse>(&response)) {
-        return send->dispatchComponents;
-    } else if (auto constant = get_if<ConstantResponse>(&response)) {
-        return constant->dispatchComponents;
-    } else if (auto def = get_if<DefinitionResponse>(&response)) {
-        return def->dispatchComponents;
+const core::TypeAndOrigins &QueryResponse::getTypeAndOrigins() const {
+    if (auto ident = isIdent()) {
+        return ident->retType;
+    } else if (auto literal = isLiteral()) {
+        return literal->retType;
+    } else if (auto constant = isConstant()) {
+        return constant->retType;
+    } else if (auto field = isField()) {
+        return field->retType;
+    } else if (auto def = isDefinition()) {
+        return def->retType;
     } else {
-        return emptyDispatchComponents;
+        Exception::raise("QueryResponse is of type that does not have TypeAndOrigins.");
     }
 }
 

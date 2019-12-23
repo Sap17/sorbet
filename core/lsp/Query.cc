@@ -27,16 +27,28 @@ Query Query::createVarQuery(core::SymbolRef owner, core::LocalVariable variable)
     return Query(Query::Kind::VAR, core::Loc::none(), owner, variable);
 }
 
+Query Query::createSuggestSigQuery(core::SymbolRef method) {
+    ENFORCE(method.exists());
+    return Query(Query::Kind::SUGGEST_SIG, core::Loc::none(), method, core::LocalVariable());
+}
+
 bool Query::matchesSymbol(const core::SymbolRef &symbol) const {
     return kind == Query::Kind::SYMBOL && this->symbol == symbol;
 }
 
 bool Query::matchesLoc(const core::Loc &loc) const {
-    return kind == Query::Kind::LOC && loc.contains(this->loc);
+    // N.B.: Sorbet inserts zero-length Locs for items that are implicitly inserted during parsing.
+    // Example: `foo` may be translated into `self.foo`, where `self.` has a 0-length loc.
+    // We disregard these in LSP matches, as they don't correspond to source text that the user is pointing at.
+    return kind == Query::Kind::LOC && (loc.endPos() - loc.beginPos()) > 0 && loc.contains(this->loc);
 }
 
 bool Query::matchesVar(const core::SymbolRef &owner, const core::LocalVariable &var) const {
     return kind == Query::Kind::VAR && var.exists() && this->symbol == owner && this->variable == var;
+}
+
+bool Query::matchesSuggestSig(const core::SymbolRef &method) const {
+    return kind == Query::Kind::SUGGEST_SIG && this->symbol == method;
 }
 
 bool Query::isEmpty() const {

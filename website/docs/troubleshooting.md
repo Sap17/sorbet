@@ -14,7 +14,6 @@ This doc covers two main topics:
 - When stuck, how to [find out **why**](#validating-our-assumptions).
 - Regardless of why, [how to **get unstuck**](#escape-hatches).
 
-
 ## Validating our assumptions
 
 When faced with a type error, checking our assumptions is step number one. The
@@ -26,10 +25,10 @@ There are also some tools for helping debug type-related errors:
 
 ### `T.reveal_type`
 
-If we wrap a variable or method call in `T.reveal_type`, Sorbet will show
-us what type it thinks that variable has. This is a super powerful debugging
-technique! `T.reveal_type` should be **one of the first tools** to reach for
-when debugging a confusing error.
+If we wrap a variable or method call in `T.reveal_type`, Sorbet will show us
+what type it thinks that variable has in the output of `srb tc`. This is a super
+powerful debugging technique! `T.reveal_type` should be **one of the first
+tools** to reach for when debugging a confusing error.
 
 Try making a hypothesis of what the problem is ("I think the problem is...") and
 then create small examples in <https://sorbet.run> to test the hypothesis with
@@ -44,7 +43,10 @@ def foo(xs)
   T.reveal_type(xs.first) # => Revealed type: `T.nilable(Integer)`
 end
 ```
-[→ View on sorbet.run](https://sorbet.run/#%23%20typed%3A%20true%0Aextend%20T%3A%3ASig%0A%0Asig%20%7Bparams(xs%3A%20T%3A%3AArray%5BInteger%5D).returns(Integer)%7D%0Adef%20foo(xs)%0A%20%20T.reveal_type(xs.first)%20%23%20%3D%3E%20Revealed%20type%3A%20%60T.nilable(Integer)%60%0Aend)
+
+<a href="https://sorbet.run/#%23%20typed%3A%20true%0Aextend%20T%3A%3ASig%0A%0Asig%20%7Bparams(xs%3A%20T%3A%3AArray%5BInteger%5D).returns(Integer)%7D%0Adef%20foo(xs)%0A%20%20T.reveal_type(xs.first)%20%23%20%3D%3E%20Revealed%20type%3A%20%60T.nilable(Integer)%60%0Aend">
+  → View on sorbet.run
+</a>
 
 With this example we see that `xs.first` returns `T.nilable(Integer)`.
 
@@ -90,8 +92,8 @@ even when it does:
   typed incorrectly (our standard library shims are sometimes incomplete).
 
 - Maybe a method Sorbet thinks doesn't exist actually **does** exist because it
-  was dynamically defined with `define_method` or `missing_method`. See [Escape
-  Hatches](#escape-hatches) below for working around this.
+  was dynamically defined with `define_method` or `missing_method`. See
+  [Escape Hatches](#escape-hatches) below for working around this.
 
 ### `*.rbi` files & missing methods
 
@@ -100,8 +102,8 @@ exist." Ruby is a very dynamic language, and methods can be defined in ways
 Sorbet cannot see statically. It's possible that even though a method exists at
 runtime, Sorbet cannot see it.
 
-However, we can use `*.rbi` files to declare methods to Sorbet so that it **can**
-see them statically. For more information about RBI files:
+However, we can use `*.rbi` files to declare methods to Sorbet so that it
+**can** see them statically. For more information about RBI files:
 
 [→ RBI files](rbi.md)
 
@@ -120,7 +122,6 @@ gotchas when using Sorbet, here are two more specific resources:
 
   This is a list of questions people commonly have when working with Sorbet and
   the runtime type system. Skim it to see if it says anything useful!
-
 
 ## Escape Hatches
 
@@ -175,7 +176,8 @@ programmer.
 Note that the call to `T.unsafe` must wrap the [receiver] of the method call. In
 this example:
 
-[receiver]: https://stackoverflow.com/questions/916572/in-ruby-what-does-the-receiver-refer-to
+[receiver]:
+  https://stackoverflow.com/questions/916572/in-ruby-what-does-the-receiver-refer-to
 
 ```ruby
 # typed: true
@@ -208,106 +210,24 @@ class A
 end
 ```
 
-### `T.cast`
+### `T.cast`: a safer alternative to `T.unsafe`
 
 `T.unsafe` is maximally unsafe. It forces Sorbet to forget all type information
-statically—sometimes this is more power than we need. For example, sometimes
-we the programmer are aware of an invariant in the code that isn't currently
-expressed in the type system:
+statically---sometimes this is more power than we need. For the cases where we
+the programmer know of an invariant that isn't currently expressed in the type
+system, [`T.cast`](type-assertions#tcast) is a good middle-ground.
 
-```ruby
-extend T::Sig
+### Changing when runtime exceptions are raised
 
-class A; def foo; end; end
-class B; def bar; end; end
+Both `T.unsafe` and `T.cast` relax Sorbet's static checks. They don't silence
+any exceptions that would be raised for type errors at runtime.
 
-sig {params(label: String, a_or_b: T.any(A, B)).void}
-def foo(label, a_or_b)
-  case label
-  when 'a'
-    a_or_b.foo
-  when 'b'
-    a_or_b.bar
-  end
-end
-```
+There are also ways to change the runtime behavior; these escape hatches are
+documented elsewhere. See:
 
-In this case, we know (through careful test cases / confidence in our production
-monitoring) that every time this method is called with `label = 'a'`, `a_or_b`
-is an instance of `A`, and same for `'b'` / `B`.
+- [Enabling Runtime Checks](runtime.md), which has docs on how to configure and
+  opt out of certain runtime checks.
 
-Ideally we'd refactor our code to express this invariant in the types. To
-reiterate: the **preferred** solution is to refactor this code. The time spent
-adjusting this code now will make it easier and safer to refactor the code in
-the future. Even still, we don't always have the time *right now*, so let's see
-how we can work around the issue.
-
-We **could** use `T.unsafe` here, but that's a pretty big hammer. Instead, we'll
-use `T.cast` to explicitly tell our invariant to Sorbet:
-
-```ruby
-  case label
-  when 'a'
-    T.cast(a_or_b, A).foo
-  when 'b'
-    T.cast(a_or_b, B).bar
-  end
-```
-
-Sorbet cannot **statically** guarantee that a `T.cast`-enforced invariant will
-succeed in every case, but it will check the invariant **dynamically** on every
-invocation.
-
-`T.cast` is better than `T.unsafe`, because it means that something like
-
-```ruby
-    T.cast(a_or_b, A).bad_method
-```
-
-will still be caught as a missing method statically.
-
-
-### `.soft()` & `.checked()`
-
-`T.unsafe` and `T.cast` let us opt out of static checks. These next constructs
-let us opt out of runtime checks. We might want to opt out of runtime checks
-because...
-
-- we've measured that calling our method is performance sensitive
-- we're rolling out types to previously-untyped code, and want to make sure our
-  types are correct
-
-To opt out of runtime checks, we have three options, all of which we'll add to
-the `sig` of the specific method we'd like to opt out of:
-
-- `.soft(notify: ...)`
-- `.checked(:tests)`
-- `.checked(:never)`
-
-From the static system's perspective, adding any of these to a sig will have no
-effect. In the runtime, the behavior of these three differs depending on whether
-we're in tests or in production:
-
-| If types don't match, using ↓ in → ... | Tests            | Production       |
-| ---                                    | -----            | ----------       |
-| _none of the below_                    | will raise       | will raise       |
-| `.soft(notify: ...)`                   | will raise       | soft asserts     |
-| `.checked(:tests)`                     | will raise       | skips validation |
-| `.checked(:never)`                     | skips validation | skips validation |
-
-To recap:
-
-- By default, calling a method or returning a result that doesn't match the sig
-  will **raise** in both tests and prod.
-
-- `.soft()` works the same as all soft assertions (raise in tests, soft assert
-  in prod)
-
-- `.checked(:tests)` is preferred for methods which we've measured to be
-  performance sensitive. They'll have no effect on production from the runtime
-  perspective, but will still be checked in tests.
-
-- `.checked(:never)` is a hammer. It silences all validation in both tests and
-  production. Use this with caution!! Without **any** runtime validation, Sorbet
-  cannot warn when interoperating with untyped code.
-
+- [Runtime Configuration](tconfiguration.md), which has docs on how to write
+  low-level configuration handlers that intercept any exceptions that the
+  runtime could raise.

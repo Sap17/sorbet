@@ -19,7 +19,7 @@ class Main
     end
 
     def main
-        int("string") # error: `String("string")` doesn't match `Integer` for argument `a`
+        int("string") # error: Expected `Integer` but found `String("string")` for argument `a`
 
         foo = Object.new
         # T.assert_type!(foo, 3) # commented-out-error: 3
@@ -27,11 +27,15 @@ class Main
         T.assert_type!(foo, Array) # error: asserted type `T::Array[T.untyped]`
         T.assert_type!(foo, T.any(String, Integer)) # error: asserted type `T.any(String, Integer)`
         T.assert_type!(foo, T.all(A, B)) # error: asserted type `T.all(A, B)`
+        T.assert_type!(foo, T.any(TrueClass, NilClass, FalseClass)) # error: asserted type `T.nilable(T::Boolean)`
+        T.assert_type!(foo, T.any(TrueClass, TrueClass, FalseClass)) # error: asserted type `T::Boolean`
+        T.assert_type!(foo, T.any(TrueClass, TrueClass, FalseClass, FalseClass)) # error: asserted type `T::Boolean`
         T.assert_type!(foo, T.nilable(String)) # error: asserted type `T.nilable(String)`
+        T.assert_type!(foo, T.any(NilClass, NilClass)) # error: asserted type `NilClass`
         T.assert_type!(foo, T.any(String, NilClass)) # error: asserted type `T.nilable(String)`
         T.assert_type!(foo, T.any(NilClass, String)) # error: asserted type `T.nilable(String)`
         T.assert_type!(foo, T.any(String, Symbol, NilClass)) # error: asserted type `T.nilable(T.any(String, Symbol))`
-        T.assert_type!(foo, T.any(String, Symbol, NilClass, Integer, Float)) # error: asserted type `T.any(String, Symbol, NilClass, Integer, Float)`
+        T.assert_type!(foo, T.any(String, Symbol, NilClass, Integer, Float)) # error: asserted type `T.nilable(T.any(String, Symbol, Integer, Float))`
         T.assert_type!(foo, T::Array[Integer]) # error: asserted type `T::Array[Integer]`
         T.assert_type!(foo, T::Hash[T.any(Symbol, String), Integer]) # error: asserted type `T::Hash[T.any(Symbol, String), Integer]`
         T.assert_type!(foo, Box[Integer]) # error: asserted type `Box[Integer]`

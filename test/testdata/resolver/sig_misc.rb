@@ -1,10 +1,10 @@
 # typed: true
-# disable-fast-path: true
 class T1; end
 class T2; end
 
 class A
   extend T::Sig
+  extend T::Helpers
   sig {returns(T.noreturn)}
   def noreturn
     raise "foo"
@@ -23,7 +23,9 @@ class A
     T2.new
   end
 
-  sig {params(types).returns(T1)} # error: Method `types` does not exist
+  sig {params(types).returns(T1)}
+            # ^^^^^ error: Method `types` does not exist
+     # ^^^^^^^^^^^^^ error: `params` expects keyword arguments
   def f1(x) # error: Type not specified for argument
     T1.new
   end
@@ -76,12 +78,13 @@ class A
    # empty, because abstract
   end
 
-  sig { implementation.void }
-  def test_implementation(x) # error: Malformed `sig`. Type not specified for argument
+  sig { override.void }
+  def test_implementation(x) # error: Method `A#test_implementation` is marked `override` but does not override anything
+                        # ^ error: Malformed `sig`. Type not specified for argument
   end
 
   sig {override.returns(T1)}
-  def test_override;
+  def test_override; # error: Method `A#test_override` is marked `override` but does not override anything
     T1.new
   end
 
@@ -90,8 +93,8 @@ class A
     T1.new
   end
 
-  sig {implementation.overridable.returns(T1)}
-  def test_overridable_implementation;
+  sig {override.overridable.returns(T1)}
+  def test_overridable_implementation; # error: Method `A#test_overridable_implementation` is marked `override` but does not override anything
     T1.new
   end
 
@@ -101,7 +104,11 @@ class A
 
   sig {}; def test_standard_untyped; end # error: Malformed `sig`: No return type specified. Specify one with .returns()
 
-  sig {void.foo}; def test_junk_inside; end # error: Method `foo` does not exist on `T::Private::Methods::SigBuilder`
+  sig {void.foo}; def test_junk_inside; end # error: invalid in this context
+     # ^^^^^^^^ error: Method `foo` does not exist
+
+  sig {T.void}; def test_junk_again; end # error: being invoked on an invalid receiver
+     # ^^^^^^ error: Method `void` does not exist
 
   sig {params(z: T1).returns(T1)} # error: Malformed `sig`. No method def following it
 end

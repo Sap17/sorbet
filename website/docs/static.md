@@ -3,8 +3,8 @@ id: static
 title: Enabling Static Checks
 ---
 
-This doc will cover how to enable and disable the **static checks** that
-`srb` reports. Specifically, we'll look at how to toggle these checks...
+This doc will cover how to enable and disable the **static checks** that `srb`
+reports. Specifically, we'll look at how to toggle these checks...
 
 - ...within an entire **file**.
 - ...for a particular **method**.
@@ -24,30 +24,34 @@ When run at the command line, `srb` roughly works like this:
 2.  Generate a list of errors within the project.
 3.  Display all errors to the user.
 
-However, in step (3), most kinds of errors are *silenced* by default, instead of
-being reported. To opt into *more* checks, we use `# typed:` **sigils**[^sigil]. A
-`# typed:` sigil is a comment placed at the top of a Ruby file, indicating to
+However, in step (3), most kinds of errors are _silenced_ by default, instead of
+being reported. To opt into _more_ checks, we use `# typed:` **sigils**[^sigil].
+A `# typed:` sigil is a comment placed at the top of a Ruby file, indicating to
 `srb` which errors to report and which to silence. These are the available
 sigils, each defining a **strictness level**:
+
+<!-- prettier-ignore-start -->
 
 [^sigil]: Google defines sigil as, "an inscribed or painted symbol considered to
 have magical power," and we like to think of types as pretty magical 🙂
 
+<!-- prettier-ignore-end -->
+
 | All errors silenced |                |               |                 | All errors reported |
-| ---                 | ---            | ---           | ---             | ---                 |
+| ------------------- | -------------- | ------------- | --------------- | ------------------- |
 | `typed: ignore`     | `typed: false` | `typed: true` | `typed: strict` | `typed: strong`     |
 
 Each strictness level reports all errors at lower levels, plus new errors:
 
 - At `# typed: ignore`, the file is not even read by Sorbet, and so no errors at
   all are reported in that file. **Note**: ignoring a file can cause errors to
-  appear in *other* files, because that other file references something defined
+  appear in _other_ files, because that other file references something defined
   in an ignored file. We recommend pushing the entire project to out of `ignore`
   (at Stripe, 100% of non-test files are not ignored.)
 
-- At `# typed: false`, only errors related to things like syntax and constant
-  resolution are reported. Fixing these errors is the baseline for adopting
-  Sorbet in a new codebase, and provides value even before adding type
+- At `# typed: false`, only errors related to syntax, constant resolution and
+  correctness of `sig`s are reported. Fixing these errors is the baseline for
+  adopting Sorbet in a new codebase, and provides value even before adding type
   annotations. `# typed: false` is the **default** for files without sigils.
 
 - At `# typed: true`, things that would normally be called "type errors" are
@@ -56,24 +60,26 @@ Each strictness level reports all errors at lower levels, plus new errors:
   etc.
 
 - At `# typed: strict`, Sorbet no longer implicitly marks things as being
-  [dynamically typed](untyped.md). At this level all methods, constants, and
-  instance variables must have [explicitly annotated types](strict.md).
-  This is analogous to TypeScript's `noImplicitAny` flag.
+  [dynamically typed](untyped.md). At this level all methods must have
+  [sigs](sigs.md), and all constants and instance variables must have
+  [explicitly annotated types](type-annotations.md). This is analogous to
+  TypeScript's `noImplicitAny` flag.
 
 - At `# typed: strong`, Sorbet no longer allows [`T.untyped`](untyped.md) as the
   intermediate result of any method call. This effectively means that Sorbet
-  knew the type statically for 100% of calls within a file. It's currently
-  impossible to write code with no errors at this strictness level.
+  knew the type statically for 100% of calls within a file. Currently, this
+  sigil is rarely used—usually the only files that are `# typed: strong` are RBI
+  files and files with empty class definitions. Most Ruby files that actually do
+  interesting things will have errors in `# typed: strong`.
 
 To recap: adding one of these comments to the top of a Ruby file controls which
-errors `srb` reports or silences in that file. The strictness level only
-affects which errors are reported.
+errors `srb` reports or silences in that file. The strictness level only affects
+which errors are reported.
 
-> **Note**: Method signatures in `# typed: false` files are *still parsed and
-> used* by Sorbet if that method is called in other files. Specifically, adding
+> **Note**: Method signatures in `# typed: false` files are _still parsed and
+> used_ by Sorbet if that method is called in other files. Specifically, adding
 > a signature in a `# typed: false` file might introduce new type errors if it's
 > called from a `# typed: true` file.
-
 
 ## Method-level granularity: `sig`
 
@@ -107,7 +113,7 @@ def log_env(env, key)
   puts "LOG: #{key} => #{env[key]}"
 end
 
-log_env({timeout_len: 2000}, 'timeout_len') # => `String("timeout_len")` doesn't match `Symbol`
+log_env({timeout_len: 2000}, 'timeout_len') # => Expected `Symbol` but found `String("timeout_len")`
 ```
 
 In this example, we add a line like `sig {...}` above the `def log_env` line.
@@ -116,7 +122,7 @@ of a method. By adding the `sig` to `log_env`, we opted this method into
 additional checks. Now `srb` reports this:
 
 ```plaintext
-`String("timeout_len")` doesn't match `Symbol` for argument `key`
+Expected `Symbol` but found `String("timeout_len")` for argument `key`
 ```
 
 ## Argument-level granularity: `T.untyped`
@@ -130,10 +136,10 @@ T::Hash[Symbol, Integer]
 ```
 
 For example, it's possible that we don't care about what's stored in the `env`,
-only that we access things in the `env` with `Symbol` keys. Right now though,
-an `env` of `{user: 'jez'}` is a type error. In this case, we may want to *opt
-out* of some static checks on this speficic argument, without opting out the
-method entirely. In this case, we can use [`T.untyped`](untyped.md):
+only that we access things in the `env` with `Symbol` keys. Right now though, an
+`env` of `{user: 'jez'}` is a type error. In this case, we may want to _opt out_
+of some static checks on this specific argument, without opting out the method
+entirely. In this case, we can use [`T.untyped`](untyped.md):
 
 ```ruby
 # typed: true
@@ -149,19 +155,18 @@ log_env({timeout_len: 2000, user: 'jez'}, :user)  # ok
 
 `T.untyped` is a type that effectively makes a region of code act like it was
 written in a dynamically typed language with no static checks. By using
-`T.untyped` in specific arguments within a `sig`, we can silence most (but
-not all) errors relating to that argument.
+`T.untyped` in specific arguments within a `sig`, we can silence most (but not
+all) errors relating to that argument.
 
 > **Warning**: Be careful about opting out of static checks with `T.untyped`!
 > Usually, we can rewrite our code to avoid silencing errors. For example, we
 > could have refactored this code to use [Shape types](shapes.md), `Struct`s, or
 > best of all: [Typed Structs](tstruct.md).
 
-
 ## Call-site granularity: `T.unsafe`
 
-Using sigils and method signatures are the primary ways we opt *into* static
-checks, and using `T.untyped` we can opt a specific argument *out of* static
+Using sigils and method signatures are the primary ways we opt _into_ static
+checks, and using `T.untyped` we can opt a specific argument _out of_ static
 checks.
 
 One last way we can opt out of static checks is with `T.unsafe`. `T.unsafe` is a
@@ -183,8 +188,8 @@ T.unsafe(a).foo   # ok
 ```
 
 The call to `T.unsafe` marks `a` as `T.untyped`, which causes Sorbet to silence
-the error about the method `foo` as missing. Note: sometimes what looks like
-a local variable is actually a method call on `self` in Ruby:
+the error about the method `foo` as missing. Note: sometimes what looks like a
+local variable is actually a method call on `self` in Ruby:
 
 ```ruby
 define_singleton_method(:foo) { puts 'A.foo'; true }

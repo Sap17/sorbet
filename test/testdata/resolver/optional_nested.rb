@@ -1,5 +1,4 @@
 # typed: true
-# disable-fast-path: true
 module M
   class C
     extend T::Sig
@@ -20,12 +19,12 @@ class Test
   end
 
   sig {params(x: String).returns(String)}
-  def bar(x = M::C.id(nil)) # error: `NilClass` doesn't match `String`
+  def bar(x = M::C.id(nil)) # error: Expected `String` but found `NilClass`
     'hello, ' + x
   end
 
   sig {params(x: Integer, y: String).returns(NilClass)}
-  def qux(x, y: M::C.id(x)) # error: `Integer` doesn't match `String`
+  def qux(x, y: M::C.id(x)) # error: Expected `String` but found `Integer`
     puts 'hello, ' + y
   end
 end

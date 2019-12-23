@@ -5,10 +5,10 @@
 #include "common/common.h"
 #include "common/concurrency/WorkerPool.h"
 #include "common/kvstore/KeyValueStore.h"
+#include "core/NameHash.h"
 #include "main/options/options.h"
 
 namespace sorbet::realmain::pipeline {
-constexpr std::chrono::milliseconds PROGRESS_REFRESH_TIME_MILLIS = ProgressIndicator::REPORTING_INTERVAL();
 ast::ParsedFile indexOne(const options::Options &opts, core::GlobalState &lgs, core::FileRef file,
                          std::unique_ptr<KeyValueStore> &kvstore);
 
@@ -22,8 +22,8 @@ std::vector<ast::ParsedFile> index(std::unique_ptr<core::GlobalState> &gs, std::
                                    const options::Options &opts, WorkerPool &workers,
                                    std::unique_ptr<KeyValueStore> &kvstore);
 
-std::vector<ast::ParsedFile> resolve(core::GlobalState &gs, std::vector<ast::ParsedFile> what,
-                                     const options::Options &opts, bool skipConfigatron = false);
+ast::ParsedFilesOrCancelled resolve(std::unique_ptr<core::GlobalState> &gs, std::vector<ast::ParsedFile> what,
+                                    const options::Options &opts, WorkerPool &workers, bool skipConfigatron = false);
 
 std::vector<ast::ParsedFile> incrementalResolve(core::GlobalState &gs, std::vector<ast::ParsedFile> what,
                                                 const options::Options &opts);
@@ -31,11 +31,15 @@ std::vector<ast::ParsedFile> incrementalResolve(core::GlobalState &gs, std::vect
 std::vector<ast::ParsedFile> name(core::GlobalState &gs, std::vector<ast::ParsedFile> what,
                                   const options::Options &opts, bool skipConfigatron = false);
 
-std::vector<ast::ParsedFile> typecheck(std::unique_ptr<core::GlobalState> &gs, std::vector<ast::ParsedFile> what,
-                                       const options::Options &opts, WorkerPool &workers);
+ast::ParsedFilesOrCancelled typecheck(std::unique_ptr<core::GlobalState> &gs, std::vector<ast::ParsedFile> what,
+                                      const options::Options &opts, WorkerPool &workers);
 
 ast::ParsedFile typecheckOne(core::Context ctx, ast::ParsedFile resolved, const options::Options &opts);
-unsigned int computeFileHash(std::shared_ptr<core::File> forWhat, spdlog::logger &logger);
+
+core::FileHash computeFileHash(std::shared_ptr<core::File> forWhat, spdlog::logger &logger);
+
+core::StrictLevel decideStrictLevel(const core::GlobalState &gs, const core::FileRef file,
+                                    const options::Options &opts);
 
 } // namespace sorbet::realmain::pipeline
 #endif // RUBY_TYPER_PIPELINE_H

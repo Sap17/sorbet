@@ -1,6 +1,8 @@
 #include "common/Counters.h"
 #include "absl/strings/str_cat.h"
 #include "common/Counters_impl.h"
+#include "common/formatting.h"
+#include "common/sort.h"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -49,6 +51,9 @@ void CounterImpl::histogramAdd(const char *histogram, int key, unsigned long val
 }
 
 void CounterImpl::prodHistogramAdd(const char *histogram, int key, unsigned long value) {
+    if (fuzz_mode) {
+        return;
+    }
     this->histograms[histogram][key] += value;
 }
 
@@ -60,6 +65,9 @@ void CounterImpl::categoryCounterAdd(const char *category, const char *counter, 
 }
 
 void CounterImpl::prodCategoryCounterAdd(const char *category, const char *counter, unsigned long value) {
+    if (fuzz_mode) {
+        return;
+    }
     this->countersByCategory[category][counter] += value;
 }
 
@@ -71,10 +79,16 @@ void CounterImpl::counterAdd(const char *counter, unsigned long value) {
 }
 
 void CounterImpl::prodCounterAdd(const char *counter, unsigned long value) {
+    if (fuzz_mode) {
+        return;
+    }
     this->counters[counter] += value;
 }
 
 void CounterImpl::timingAdd(CounterImpl::Timing timing) {
+    if (fuzz_mode) {
+        return;
+    }
     this->timings.emplace_back(timing);
 }
 
@@ -158,11 +172,6 @@ void categoryCounterAdd(ConstExprStr category, ConstExprStr counter, unsigned lo
     counterState.categoryCounterAdd(category.str, counter.str, value);
 }
 
-int getGlobalTimingId() {
-    static atomic<int> counter = 0;
-    return ++counter;
-}
-
 int genThreadId() {
     static atomic<int> counter{0};
     return ++counter;
@@ -173,27 +182,24 @@ int getThreadId() {
     return counter;
 }
 
-void timingAdd(string_view measure, unsigned long start, unsigned long end) {
-    CounterImpl::Timing tim{0, (string)measure, start, end - start, getThreadId(), CounterImpl::Timing::Duration};
-    counterState.timingAdd(tim);
+vector<pair<const char *, string>> givenArgs2StoredArgs(vector<pair<ConstExprStr, string>> given) {
+    vector<pair<const char *, string>> stored;
+    for (auto &e : given) {
+        stored.emplace_back(e.first.str, move(e.second));
+    }
+    return stored;
 }
 
-void timingAddAsync(string_view measure, unsigned long start, unsigned long end) {
-    CounterImpl::Timing tim{getGlobalTimingId(), (string)measure, start,
-                            end - start,         std::nullopt,    CounterImpl::Timing::Async};
-    counterState.timingAdd(tim);
-}
-
-FlowId timingAddFlowStart(string_view measure, unsigned long start) {
-    int id = getGlobalTimingId();
-    CounterImpl::Timing tim{id, (string)measure, start, nullopt, getThreadId(), CounterImpl::Timing::FlowStart};
-    counterState.timingAdd(tim);
-    FlowId ret{(string)measure, id};
-    return ret;
-}
-
-void timingAddFlowEnd(FlowId flowId, unsigned long end) {
-    CounterImpl::Timing tim{flowId.id, flowId.name, end, nullopt, getThreadId(), CounterImpl::Timing::FlowEnd};
+void timingAdd(ConstExprStr measure, std::chrono::time_point<std::chrono::steady_clock> start,
+               std::chrono::time_point<std::chrono::steady_clock> end, vector<pair<ConstExprStr, string>> args,
+               FlowId self, FlowId previous) {
+    ENFORCE(
+        (self.id == 0) || (previous.id == 0),
+        "format doesn't support chaining"); // see "case 1" in
+                                            // https://docs.google.com/document/d/1La_0PPfsTqHJihazYhff96thhjPtvq1KjAUOJu0dvEg/edit?pli=1#
+                                            // for workaround
+    CounterImpl::Timing tim{0,    measure.str, start, end, getThreadId(), givenArgs2StoredArgs(move(args)),
+                            self, previous};
     counterState.timingAdd(tim);
 }
 
@@ -259,8 +265,6 @@ bool shouldShow(vector<string> &wantNames, string_view name) {
     return absl::c_linear_search(wantNames, name);
 }
 
-constexpr double TIMING_TO_MSEC_MULTIPLIER = 0.001;
-
 string getCounterStatistics(vector<string> names) {
     counterState.canonicalize();
 
@@ -280,7 +284,7 @@ string getCounterStatistics(vector<string> names) {
         }
         fast_sort(sorted, [](const auto &e1, const auto &e2) -> bool { return e1.first > e2.first; });
 
-        fmt::format_to(buf, " {}\n{:<26.26} Total :{:10.10}\n", cat.first, "", (double)sum);
+        fmt::format_to(buf, " {}\n{:<36.36} Total :{:15.15}\n", cat.first, "", (double)sum);
 
         if (sum == 0) {
             sum = 1;
@@ -288,7 +292,7 @@ string getCounterStatistics(vector<string> names) {
         for (auto &e : sorted) {
             auto perc = e.first * 100.0 / sum;
             string hashes((int)(MAX_STAT_WIDTH * 1.0 * e.first / sum), '#');
-            fmt::format_to(buf, "  {:>30.30} :{:10.10}, {:3.1f}% {}\n", e.second, (double)e.first, perc, hashes);
+            fmt::format_to(buf, "  {:>40.40} :{:15.15}, {:3.1f}% {}\n", e.second, (double)e.first, perc, hashes);
         }
         fmt::format_to(buf, "\n");
     }
@@ -305,7 +309,7 @@ string getCounterStatistics(vector<string> names) {
         }
         fast_sort(sorted, [](const auto &e1, const auto &e2) -> bool { return e1.first < e2.first; });
 
-        fmt::format_to(buf, " {}\n{:<26.26} Total :{:10.10}\n", hist.first, "", (double)sum);
+        fmt::format_to(buf, " {}\n{:<36.36} Total :{:15.15}\n", hist.first, "", (double)sum);
 
         CounterImpl::CounterType header = 0;
         auto it = sorted.begin();
@@ -317,7 +321,7 @@ string getCounterStatistics(vector<string> names) {
         if (it != sorted.begin()) {
             auto perc = header * 100.0 / sum;
             string hashes((int)(MAX_STAT_WIDTH * 1.0 * header / sum), '#');
-            fmt::format_to(buf, "  <{:>29.29} :{:10.10}, {:5.1f}% {}\n", to_string(it->first), (double)header, perc,
+            fmt::format_to(buf, "  <{:>39.39} :{:15.15}, {:5.1f}% {}\n", to_string(it->first), (double)header, perc,
                            hashes);
         }
 
@@ -325,14 +329,14 @@ string getCounterStatistics(vector<string> names) {
             header += it->second;
             auto perc = it->second * 100.0 / sum;
             string hashes((int)(MAX_STAT_WIDTH * 1.0 * it->second / sum), '#');
-            fmt::format_to(buf, "  {:>30.30} :{:10.10}, {:5.1f}% {}\n", to_string(it->first), (double)it->second, perc,
+            fmt::format_to(buf, "  {:>40.40} :{:15.15}, {:5.1f}% {}\n", to_string(it->first), (double)it->second, perc,
                            hashes);
             it++;
         }
         if (it != sorted.end()) {
             auto perc = (sum - header) * 100.0 / sum;
             string hashes((int)(MAX_STAT_WIDTH * 1.0 * (sum - header) / sum), '#');
-            fmt::format_to(buf, "  >={:>28.28} :{:10.10}, {:5.1f}% {}\n", to_string(it->first), (double)(sum - header),
+            fmt::format_to(buf, "  >={:>38.38} :{:15.15}, {:5.1f}% {}\n", to_string(it->first), (double)(sum - header),
                            perc, hashes);
         }
         fmt::format_to(buf, "\n");
@@ -341,28 +345,28 @@ string getCounterStatistics(vector<string> names) {
     {
         fmt::format_to(buf, "Timings: \n");
         vector<pair<string, string>> sortedTimings;
-        UnorderedMap<string, vector<CounterImpl::CounterType>> timings;
+        UnorderedMap<string, vector<double>> timings;
         for (const auto &e : counterState.timings) {
-            if (e.duration) {
-                timings[e.namePrefix].emplace_back(e.duration.value());
-            }
+            std::chrono::duration<double, std::milli> durationMs = e.end - e.start;
+            timings[e.measure].emplace_back(durationMs.count());
         }
         for (const auto &e : timings) {
             if (!shouldShow(names, e.first)) {
                 continue;
             }
             if (e.second.size() == 1) {
-                string line =
-                    fmt::format("  {:>24.24}.value :{:10.4} ms\n", e.first, e.second[0] * TIMING_TO_MSEC_MULTIPLIER);
+                string line = fmt::format("  {:>34.34}.value :{:15.4} ms\n", e.first, e.second[0]);
                 sortedTimings.emplace_back(e.first, line);
                 continue;
             }
 
-            string line =
-                fmt::format("  {:>26.26}.min :{:10.4} ms\n  {:>26.26}.max :{:10.4} ms\n  {:>26.26}.avg :{:10.4} ms\n",
-                            e.first, *absl::c_min_element(e.second) * TIMING_TO_MSEC_MULTIPLIER, e.first,
-                            *absl::c_max_element(e.second) * TIMING_TO_MSEC_MULTIPLIER, e.first,
-                            absl::c_accumulate(e.second, 0) * TIMING_TO_MSEC_MULTIPLIER / e.second.size());
+            // string line = fmt::format("  {:>26.26}.min :{:10.4} ms\n  {:>26.26}.max :{:10.4} ms\n\n", e.first,
+            //                           *absl::c_min_element(e.second), e.first, *absl::c_max_element(e.second));
+
+            string line = fmt::format(
+                "  {:>36.36}.min :{:15.2f} ms\n  {:>36.36}.max :{:15.2f} ms\n  {:>36.36}.avg :{:15.2f} ms\n", e.first,
+                *absl::c_min_element(e.second), e.first, *absl::c_max_element(e.second), e.first,
+                absl::c_accumulate(e.second, 0.0) / e.second.size());
             sortedTimings.emplace_back(e.first, line);
         }
         fast_sort(sortedTimings, [](const auto &e1, const auto &e2) -> bool { return e1.first < e2.first; });
@@ -381,7 +385,7 @@ string getCounterStatistics(vector<string> names) {
                 continue;
             }
 
-            string line = fmt::format("  {:>30.30} :{:10.10}\n", e.first, (double)e.second);
+            string line = fmt::format("  {:>40.40} :{:15.15}\n", e.first, (double)e.second);
             sortedOther.emplace_back(e.first, line);
         }
 

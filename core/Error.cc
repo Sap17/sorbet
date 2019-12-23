@@ -93,7 +93,7 @@ string ErrorSection::toString(const GlobalState &gs) const {
 string Error::toString(const GlobalState &gs) const {
     stringstream buf;
     buf << RESET_STYLE << FILE_POS_STYLE << loc.filePosToString(gs) << RESET_STYLE << ": " << ERROR_COLOR
-        << restoreColors(header, ERROR_COLOR) << RESET_COLOR << LOW_NOISE_COLOR << " http://go/e/" << what.code
+        << restoreColors(header, ERROR_COLOR) << RESET_COLOR << LOW_NOISE_COLOR << " " << gs.errorUrlBase << what.code
         << RESET_COLOR;
     if (loc.exists()) {
         buf << '\n' << loc.toStringWithTabs(gs, 2);
@@ -126,20 +126,27 @@ void ErrorBuilder::addErrorSection(ErrorSection &&section) {
 
 void ErrorBuilder::addAutocorrect(AutocorrectSuggestion &&autocorrect) {
     ENFORCE(state == State::WillBuild);
-    u4 n = autocorrect.loc.endPos() - autocorrect.loc.beginPos();
-    if (gs.autocorrect) {
-        auto verb = n == 0 ? "Inserted" : "Replaced with";
-        addErrorSection(ErrorSection("Autocorrect: Done",
-                                     {ErrorLine::from(autocorrect.loc, "{} `{}`", verb, autocorrect.replacement)}));
-    } else {
-        auto verb = n == 0 ? "Insert" : "Replace with";
-        addErrorSection(ErrorSection("Autocorrect: Use `-a` to autocorrect",
-                                     {ErrorLine::from(autocorrect.loc, "{} `{}`", verb, autocorrect.replacement)}));
+    for (auto &edit : autocorrect.edits) {
+        u4 n = edit.loc.endPos() - edit.loc.beginPos();
+        if (gs.autocorrect) {
+            auto line =
+                edit.replacement == ""
+                    ? ErrorLine::from(edit.loc, "Deleted")
+                    : ErrorLine::from(edit.loc, "{} `{}`", n == 0 ? "Inserted" : "Replaced with", edit.replacement);
+
+            addErrorSection(ErrorSection("Autocorrect: Done", {line}));
+        } else {
+            auto line = edit.replacement == "" ? ErrorLine::from(edit.loc, "Delete")
+                                               : ErrorLine::from(edit.loc, "{} `{}`",
+                                                                 n == 0 ? "Insert" : "Replace with", edit.replacement);
+
+            addErrorSection(ErrorSection("Autocorrect: Use `-a` to autocorrect", {line}));
+        }
     }
     this->autocorrects.emplace_back(move(autocorrect));
 }
 
-// This will sometimes be bypassed in lieue of just calling build() so put your
+// This will sometimes be bypassed in lieu of just calling build() so put your
 // logic in build() instead.
 ErrorBuilder::~ErrorBuilder() {
     if (state == State::DidBuild) {

@@ -28,15 +28,20 @@ JEMALLOC_BUILD_COMMAND = """
   export CFLAGS=$(CC_FLAGS)
   export CXXFLAGS=$(CC_FLAGS)
   export LTOFLAGS="$$([ "$$(uname)" = "Linux" ] && echo "-flto=thin")" # todo: on next clang toolchain upgrade, check if it's fixed and we can re-enable thinlto on mac
-  export EXTRA_CFLAGS="-stdlib=libc++ $${LTOFLAGS}"
-  export EXTRA_CXXFLAGS="$${EXTRA_CFLAGS}"
+  export EXTRA_CFLAGS="$${LTOFLAGS}"
+  export EXTRA_CXXFLAGS="-stdlib=libc++ $${EXTRA_CFLAGS}"
   export LDFLAGS="$${LTOFLAGS} $$([ "$$(uname)" = "Linux" ] && echo " -fuse-ld=lld")"
-  pushd $$(dirname $(location autogen.sh)) && \
-    ./autogen.sh --without-export && \
-    make build_lib_static -j4  && \
-    popd && \
-    mv $$(dirname $(location autogen.sh))/lib/libjemalloc.a $(location lib/libjemalloc.a) && \
+  pushd $$(dirname $(location autogen.sh)) > /dev/null
+
+  if compile_output=$$(./autogen.sh --without-export --disable-shared --enable-static 2>&1 && make build_lib_static -j4 2>&1); then
+    popd > /dev/null
+    mv $$(dirname $(location autogen.sh))/lib/libjemalloc.a $(location lib/libjemalloc.a)
     mv $$(dirname $(location autogen.sh))/include/jemalloc/jemalloc.h $(location include/jemalloc/jemalloc.h)
+  else
+    printf '%s\n' "$${compile_output}"
+    exit 1
+  fi
+
 """
 
 genrule(
@@ -54,6 +59,9 @@ genrule(
             "**/*.guess",
             "**/*.sub",
             "**/install-sh",
+        ],
+        exclude = [
+        "include/jemalloc/jemalloc.h",
         ],
     ),
     outs = [

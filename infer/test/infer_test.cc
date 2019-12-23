@@ -4,12 +4,15 @@
 #include "ast/desugar/Desugar.h"
 #include "common/common.h"
 #include "core/Error.h"
+#include "core/ErrorQueue.h"
 #include "core/Names.h"
 #include "core/Unfreeze.h"
-#include "dsl/dsl.h"
+#include "flattener/flatten.h"
 #include "infer/infer.h"
+#include "local_vars/local_vars.h"
 #include "namer/namer.h"
 #include "resolver/resolver.h"
+#include "rewriter/rewriter.h"
 #include "spdlog/spdlog.h"
 // has to come before the next one. This comment stops formatter from reordering them
 #include "spdlog/sinks/stdout_color_sinks.h"
@@ -46,11 +49,16 @@ void processSource(core::GlobalState &cb, string str) {
     sorbet::core::MutableContext ctx(cb, core::Symbols::root());
     auto fileId = ast->loc.file();
     auto tree = ast::ParsedFile{ast::desugar::node2Tree(ctx, move(ast)), fileId};
-    tree.tree = dsl::DSL::run(ctx, move(tree.tree));
-    tree = namer::Namer::run(ctx, move(tree));
+    tree.tree = rewriter::Rewriter::run(ctx, move(tree.tree));
+    tree = local_vars::LocalVars::run(ctx, move(tree));
     vector<ast::ParsedFile> trees;
     trees.emplace_back(move(tree));
-    resolver::Resolver::run(ctx, move(trees));
+    trees = namer::Namer::run(ctx, move(trees));
+    auto workers = WorkerPool::create(0, *logger);
+    resolver::Resolver::run(ctx, move(trees), *workers);
+    for (auto &tree : trees) {
+        tree = flatten::runOne(ctx, move(tree));
+    }
 }
 
 TEST_F(InferFixture, LiteralsSubtyping) { // NOLINT
@@ -85,8 +93,8 @@ TEST_F(InferFixture, ClassesSubtyping) { // NOLINT
 
     auto barSymbol = rootScope->findMember(ctx, ctx.state.enterNameConstant("Bar"));
     auto fooSymbol = rootScope->findMember(ctx, ctx.state.enterNameConstant("Foo"));
-    ASSERT_EQ("<C <U Bar>>", barSymbol.data(ctx)->name.data(ctx)->toString(ctx));
-    ASSERT_EQ("<C <U Foo>>", fooSymbol.data(ctx)->name.data(ctx)->toString(ctx));
+    ASSERT_EQ("<C <U Bar>>", barSymbol.data(ctx)->name.data(ctx)->showRaw(ctx));
+    ASSERT_EQ("<C <U Foo>>", fooSymbol.data(ctx)->name.data(ctx)->showRaw(ctx));
 
     auto barType = core::make_type<core::ClassType>(barSymbol);
     auto fooType = core::make_type<core::ClassType>(fooSymbol);
@@ -105,9 +113,9 @@ TEST_F(InferFixture, ClassesLubs) { // NOLINT
     auto barSymbol = rootScope->findMember(ctx, ctx.state.enterNameConstant("Bar"));
     auto foo1Symbol = rootScope->findMember(ctx, ctx.state.enterNameConstant("Foo1"));
     auto foo2Symbol = rootScope->findMember(ctx, ctx.state.enterNameConstant("Foo2"));
-    ASSERT_EQ("<C <U Bar>>", barSymbol.data(ctx)->name.data(ctx)->toString(ctx));
-    ASSERT_EQ("<C <U Foo1>>", foo1Symbol.data(ctx)->name.data(ctx)->toString(ctx));
-    ASSERT_EQ("<C <U Foo2>>", foo2Symbol.data(ctx)->name.data(ctx)->toString(ctx));
+    ASSERT_EQ("<C <U Bar>>", barSymbol.data(ctx)->name.data(ctx)->showRaw(ctx));
+    ASSERT_EQ("<C <U Foo1>>", foo1Symbol.data(ctx)->name.data(ctx)->showRaw(ctx));
+    ASSERT_EQ("<C <U Foo2>>", foo2Symbol.data(ctx)->name.data(ctx)->showRaw(ctx));
 
     auto barType = core::make_type<core::ClassType>(barSymbol);
     auto foo1Type = core::make_type<core::ClassType>(foo1Symbol);
@@ -155,9 +163,9 @@ TEST_F(InferFixture, ClassesGlbs) { // NOLINT
     auto barSymbol = rootScope->findMember(ctx, ctx.state.enterNameConstant("Bar"));
     auto foo1Symbol = rootScope->findMember(ctx, ctx.state.enterNameConstant("Foo1"));
     auto foo2Symbol = rootScope->findMember(ctx, ctx.state.enterNameConstant("Foo2"));
-    ASSERT_EQ("<C <U Bar>>", barSymbol.data(ctx)->name.data(ctx)->toString(ctx));
-    ASSERT_EQ("<C <U Foo1>>", foo1Symbol.data(ctx)->name.data(ctx)->toString(ctx));
-    ASSERT_EQ("<C <U Foo2>>", foo2Symbol.data(ctx)->name.data(ctx)->toString(ctx));
+    ASSERT_EQ("<C <U Bar>>", barSymbol.data(ctx)->name.data(ctx)->showRaw(ctx));
+    ASSERT_EQ("<C <U Foo1>>", foo1Symbol.data(ctx)->name.data(ctx)->showRaw(ctx));
+    ASSERT_EQ("<C <U Foo2>>", foo2Symbol.data(ctx)->name.data(ctx)->showRaw(ctx));
 
     auto barType = core::make_type<core::ClassType>(barSymbol);
     auto foo1Type = core::make_type<core::ClassType>(foo1Symbol);

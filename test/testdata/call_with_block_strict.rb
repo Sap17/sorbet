@@ -20,9 +20,7 @@ class B < A
 end
 
 def no_sig(&blk) # error: This function does not have a `sig`
-  # this error only happens in strict mode, since SigSuggestion only runs in strict mode,
-  # which then passes in generics to try to guess argument types
-  foo(1, &blk) # error: Passing generics as block arguments is not supported
+  foo(1, &blk)
 end
 
 sig {params(a: Integer, blk: T.nilable(T.proc.returns(String))).void}
@@ -46,7 +44,7 @@ sig {params(blk: T.proc.params(arg0: Integer).returns(String)).void}
 def int_map(&blk)
   a = [1, 2, 3].map(&blk)
   T.reveal_type(a) # error: Revealed type: `T::Array[String]`
-  ["a", "b"].map(&blk) # error: `T.proc.params(arg0: Integer).returns(String)` doesn't match `T.proc.params(arg0: String).returns(<any>)` for block argument
+  ["a", "b"].map(&blk) # error: Expected `T.proc.params(arg0: String).returns(<any>)` but found `T.proc.params(arg0: Integer).returns(String)` for block argument
 end
 
 sig {params(blk: Proc).void}

@@ -4,7 +4,9 @@
 module T::Utils
   # Used to convert from a type specification to a `T::Types::Base`.
   def self.coerce(val)
-    if val.is_a?(T::Types::Base)
+    if val.is_a?(T::Private::Types::TypeAlias)
+      val.aliased_type
+    elsif val.is_a?(T::Types::Base)
       val
     elsif val == ::Array
       T::Array[T.untyped]
@@ -14,6 +16,8 @@ module T::Utils
       T::Hash[T.untyped, T.untyped]
     elsif val == ::Enumerable
       T::Enumerable[T.untyped]
+    elsif val == ::Enumerator
+      T::Enumerator[T.untyped]
     elsif val == ::Range
       T::Range[T.untyped]
     elsif val.is_a?(Module)
@@ -22,8 +26,13 @@ module T::Utils
       T::Types::FixedArray.new(val) # rubocop:disable PrisonGuard/UseOpusTypesShortcut
     elsif val.is_a?(::Hash)
       T::Types::FixedHash.new(val) # rubocop:disable PrisonGuard/UseOpusTypesShortcut
-    elsif val.is_a?(T::Private::Methods::SigBuilder)
+    elsif val.is_a?(T::Private::Methods::DeclBuilder)
       T::Private::Methods.finalize_proc(val.decl)
+    elsif val.is_a?(::T::Enum)
+      T::Types::TEnum.new(val) # rubocop:disable PrisonGuard/UseOpusTypesShortcut
+    elsif val.is_a?(::String)
+      raise "Invalid String literal for type constraint. Must be an #{T::Types::Base}, a " \
+            "class/module, or an array. Got a String with value `#{val}`."
     else
       raise "Invalid value for type constraint. Must be an #{T::Types::Base}, a " \
             "class/module, or an array. Got a `#{val.class}`."
@@ -72,23 +81,13 @@ module T::Utils
     T::Private::Methods.run_all_sig_blocks
   end
 
-  # This can be called in a wholesome test to make sure all the `sig`s are well
-  # formed.
-  def self.validate_sigs
-    exceptions = []
-    run_all_sig_blocks
-    ObjectSpace.each_object(Module) do |mod| # rubocop:disable PrisonGuard/NoDynamicConstAccess
-      begin
-        T::Private::Abstract::Validate.validate_subclass(mod)
-        if T::AbstractUtils.abstract_module?(mod)
-          T::Private::Abstract::Validate.validate_abstract_module(mod)
-        end
-      rescue => e
-        exceptions << e
-      end
-    end
-    if !exceptions.empty?
-      raise "#{exceptions.count} exception thrown during validation:\n\n#{exceptions.map(&:message).sort.join("\n\n")}"
+  # Return the underlying type for a type alias. Otherwise returns type.
+  def self.resolve_alias(type)
+    case type
+    when T::Private::Types::TypeAlias
+      type.aliased_type
+    else
+      type
     end
   end
 
@@ -106,10 +105,6 @@ module T::Utils
     else
       nil
     end
-  end
-
-  def self.DANGER_enable_checking_in_tests
-    T::Private::RuntimeLevels.enable_checking_in_tests
   end
 
   # Returns the arity of a method, unwrapping the sig if needed
@@ -150,30 +145,55 @@ module T::Utils
     str = str.to_s
     return str if str.length <= start_len + end_len
 
-    start_part = str[0...start_len]
+    start_part = str[0...start_len - ellipsis.length]
     end_part = end_len == 0 ? '' : str[-end_len..-1]
 
     "#{start_part}#{ellipsis}#{end_part}"
   end
 
   module Nilable
-    # :is_union_type, Boolean: whether the type is an T::Types::Union type
+    # :is_union_type, T::Boolean: whether the type is an T::Types::Union type
     # :non_nilable_type, Class: if it is an T.nilable type, the corresponding underlying type; otherwise, nil.
     TypeInfo = Struct.new(:is_union_type, :non_nilable_type)
 
     def self.get_type_info(prop_type)
       if prop_type.is_a?(T::Types::Union)
         non_nilable_type = T::Utils.unwrap_nilable(prop_type)
-        if non_nilable_type
-          if non_nilable_type.is_a?(T::Types::Simple)
-            non_nilable_type = non_nilable_type.raw_type
-          else
-            non_nilable_type = non_nilable_type
-          end
+        if non_nilable_type && non_nilable_type.is_a?(T::Types::Simple)
+          non_nilable_type = non_nilable_type.raw_type
         end
         TypeInfo.new(true, non_nilable_type)
       else
         TypeInfo.new(false, nil)
+      end
+    end
+
+    # Get the underlying type inside prop_type:
+    #  - if the type is A, the function returns A
+    #  - if the type is T.nilable(A), the function returns A
+    def self.get_underlying_type(prop_type)
+      type_info = get_type_info(prop_type)
+      if type_info.is_union_type
+        type_info.non_nilable_type || prop_type
+      elsif prop_type.is_a?(T::Types::Simple)
+        prop_type.raw_type
+      else
+        prop_type
+      end
+    end
+
+    # The difference between this function and the above function is that the Sorbet type, like T::Types::Simple
+    # is preserved.
+    def self.get_underlying_type_object(prop_type)
+      T::Utils.unwrap_nilable(prop_type) || prop_type
+    end
+
+    def self.is_union_with_nilclass(prop_type)
+      case prop_type
+      when T::Types::Union
+        prop_type.types.any? {|t| t == T::Utils.coerce(NilClass)}
+      else
+        false
       end
     end
   end

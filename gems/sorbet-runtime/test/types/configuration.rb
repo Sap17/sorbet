@@ -60,7 +60,7 @@ module Opus::Types::Test
     describe 'sig_builder_error_handler' do
       describe 'when in default state' do
         it 'raises an error' do
-          @mod.sig {generated.returns(Symbol).checked(:always)}
+          @mod.sig {returns(Symbol).void}
           def @mod.foo
             :bar
           end
@@ -69,7 +69,7 @@ module Opus::Types::Test
           end
           assert_includes(
             ex.message,
-            "You can't use .checked with .generated."
+            "You can't call .void after calling .returns."
           )
         end
       end
@@ -87,11 +87,11 @@ module Opus::Types::Test
 
         it 'handles a sig builder error' do
           CustomReceiver.expects(:receive).once.with do |error, location|
-            error.message == "You can't use .checked with .generated." &&
-              error.is_a?(T::Private::Methods::SigBuilder::SigBuilderError) &&
+            error.message == "You can't call .void after calling .returns." &&
+              error.is_a?(T::Private::Methods::DeclBuilder::BuilderError) &&
               location.is_a?(Thread::Backtrace::Location)
           end
-          @mod.sig {generated.returns(Symbol).checked(:always)}
+          @mod.sig {returns(Symbol).void}
           def @mod.foo
             :bar
           end
@@ -191,6 +191,29 @@ module Opus::Types::Test
             :bar
           end
           assert_equal(:bar, @mod.foo(1))
+        end
+      end
+    end
+
+    describe 'scalar_types' do
+      describe 'when overridden' do
+        before do
+          T::Configuration.scalar_types = ['foo']
+        end
+
+        after do
+          T::Configuration.scalar_types = nil
+        end
+
+        it 'contains the correct values' do
+          assert_equal(T::Configuration.scalar_types, Set.new(['foo']))
+        end
+
+        it 'requires string values' do
+          ex = assert_raises(ArgumentError) do
+            T::Configuration.scalar_types = [1, 2, 3]
+          end
+          assert_includes(ex.message, "Provided values must all be class name strings.")
         end
       end
     end

@@ -1,4 +1,5 @@
 #include "Types.h"
+#include "common/sort.h"
 
 using namespace std;
 namespace sorbet::core {
@@ -31,7 +32,7 @@ vector<ErrorLine> TypeAndOrigins::origins2Explanations(Context ctx) const {
     return result;
 }
 
-TypeAndOrigins::~TypeAndOrigins() {
+TypeAndOrigins::~TypeAndOrigins() noexcept {
     histogramInc("TypeAndOrigins.origins.size", origins.size());
 }
 

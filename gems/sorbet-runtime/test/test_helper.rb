@@ -1,20 +1,18 @@
 # frozen_string_literal: true
 
+# Ideally we might run tests with warnings enabled, but currently this triggers
+# a number of uninitialized instance variable warnings.
+# $VERBOSE = true
+
 require 'minitest/autorun'
 require 'minitest/spec'
 require 'mocha/minitest'
 
 require 'pathname'
+require 'tempfile'
+require 'json'
 
 require_relative '../lib/sorbet-runtime'
-
-module Boolean; end
-class TrueClass
-  include Boolean
-end
-class FalseClass
-  include Boolean
-end
 
 module Critic; end
 module Critic::Unit; end
@@ -29,11 +27,9 @@ module Critic::Extensions::TypeExt
   end
 end
 
-module Chalk; end
-module Chalk::Log; end
-module Chalk::Log::CLevels; end
-class Chalk::Log::CLevels::Sheddable; end
+module Opus; end
 
+module Chalk; end
 module Chalk::Tools; end
 module Chalk::Tools::RedactionUtils
   def self.redact_with_directive(value, opts = [])
@@ -48,63 +44,23 @@ module Chalk::Tools::RedactionUtils
     end
   end
 end
-Chalk::Tools::RedactionUtils::RedactionDirectiveSpec = T.type_alias(T.any(
-  T.enum([
-    :redact_digits,
-    :redact_digits_except_last4,
-    :redact_card,
-    :redact_all,
-    :truncate,
-  ]),
-  [T.enum([:truncate]), Integer],
-  [T.enum([:truncate_middle]), Integer, Integer],
-  [T.enum([:redact_middle]), Integer, Integer],
-  [T.enum([:replace]), String],
-))
+Chalk::Tools::RedactionUtils::RedactionDirectiveSpec = T.type_alias do
+  T.any(
+    T.enum([
+      :redact_digits,
+      :redact_digits_except_last4,
+      :redact_card,
+      :redact_all,
+      :truncate,
+    ]),
+    [T.enum([:truncate]), Integer],
+    [T.enum([:truncate_middle]), Integer, Integer],
+    [T.enum([:redact_middle]), Integer, Integer],
+    [T.enum([:replace]), String],
+  )
+end
 
-module Opus; end
 module Opus::Types; end
 module Opus::Types::Test; end
 class Opus::Types::Test::TypesTest < Critic::Unit::UnitTest; end
 module Opus::Types::Test::Props; end
-module Opus::Sensitivity; end
-module Opus::Sensitivity::PIIable; end
-module Opus::Sensitivity::Utils
-  def self.normalize_sensitivity_and_pii_annotation(value)
-    value
-  end
-end
-class Opus::Enum; end
-module Opus::Breakage; end
-class Opus::Breakage::BreakageInfo; end
-module Opus::CI; end
-module Opus::Extn; end
-module Opus::Extn::Assertions; end
-class Opus::Extn::Assertions::HardAssertionRuntimeError < RuntimeError; end
-module Opus::Error
-  def self.hard(message, *)
-    raise Opus::Extn::Assertions::HardAssertionRuntimeError.new(message)
-  end
-
-  def self.soft(message, *);
-    raise message
-  end
-end
-
-module Opus::Log
-  def self.info(*); end
-end
-
-module Opus::Project
-  def self.fetch(*); end
-  def self.storage; end
-end
-module Opus::Project::Instance
-  def self.fetch(*); end
-end
-
-module Opus::Sys
-  def self.testing?
-    true
-  end
-end

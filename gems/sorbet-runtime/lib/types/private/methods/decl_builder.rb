@@ -2,16 +2,16 @@
 # typed: true
 
 module T::Private::Methods
-  Declaration = Struct.new(:mod, :params, :returns, :bind, :mode, :checked, :finalized, :soft_notify, :override_allow_incompatible, :type_parameters, :generated)
+  Declaration = Struct.new(:mod, :params, :returns, :bind, :mode, :checked, :finalized, :on_failure, :override_allow_incompatible, :type_parameters)
 
-  class SigBuilder
+  class DeclBuilder
     attr_reader :decl
 
-    class SigBuilderError < StandardError; end
+    class BuilderError < StandardError; end
 
     private def check_live!
       if decl.finalized
-        raise SigBuilderError.new("You can't modify a signature declaration after it has been used.")
+        raise BuilderError.new("You can't modify a signature declaration after it has been used.")
       end
     end
 
@@ -25,17 +25,16 @@ module T::Private::Methods
         Modes.standard, # mode
         ARG_NOT_PROVIDED, # checked
         false, # finalized
-        ARG_NOT_PROVIDED, # soft_notify
+        ARG_NOT_PROVIDED, # on_failure
         nil, # override_allow_incompatible
         ARG_NOT_PROVIDED, # type_parameters
-        ARG_NOT_PROVIDED, # generated
       )
     end
 
     def params(params)
       check_live!
       if !decl.params.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't call .params twice")
+        raise BuilderError.new("You can't call .params twice")
       end
 
       decl.params = params
@@ -46,10 +45,10 @@ module T::Private::Methods
     def returns(type)
       check_live!
       if decl.returns.is_a?(T::Private::Types::Void)
-        raise SigBuilderError.new("You can't call .returns after calling .void.")
+        raise BuilderError.new("You can't call .returns after calling .void.")
       end
       if !decl.returns.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't call .returns multiple times in a signature.")
+        raise BuilderError.new("You can't call .returns multiple times in a signature.")
       end
 
       decl.returns = type
@@ -60,7 +59,7 @@ module T::Private::Methods
     def void
       check_live!
       if !decl.returns.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't call .void after calling .returns.")
+        raise BuilderError.new("You can't call .void after calling .returns.")
       end
 
       decl.returns = T::Private::Types::Void.new
@@ -71,7 +70,7 @@ module T::Private::Methods
     def bind(type)
       check_live!
       if !decl.bind.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't call .bind multiple times in a signature.")
+        raise BuilderError.new("You can't call .bind multiple times in a signature.")
       end
 
       decl.bind = type
@@ -83,16 +82,13 @@ module T::Private::Methods
       check_live!
 
       if !decl.checked.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't call .checked multiple times in a signature.")
+        raise BuilderError.new("You can't call .checked multiple times in a signature.")
       end
-      if !decl.soft_notify.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't use .checked with .soft.")
-      end
-      if !decl.generated.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't use .checked with .generated.")
+      if level == :never && !decl.on_failure.equal?(ARG_NOT_PROVIDED)
+        raise BuilderError.new("You can't use .checked(:never) with .on_failure because .on_failure will have no effect.")
       end
       if !T::Private::RuntimeLevels::LEVELS.include?(level)
-        raise SigBuilderError.new("Invalid `checked` level '#{level}'. Use one of: #{T::Private::RuntimeLevels::LEVELS}.")
+        raise BuilderError.new("Invalid `checked` level '#{level}'. Use one of: #{T::Private::RuntimeLevels::LEVELS}.")
       end
 
       decl.checked = level
@@ -100,44 +96,17 @@ module T::Private::Methods
       self
     end
 
-    def soft(notify:)
+    def on_failure(*args)
       check_live!
 
-      if !decl.soft_notify.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't call .soft multiple times in a signature.")
+      if !decl.on_failure.equal?(ARG_NOT_PROVIDED)
+        raise BuilderError.new("You can't call .on_failure multiple times in a signature.")
       end
-      if !decl.checked.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't use .soft with .checked.")
-      end
-      if !decl.generated.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't use .soft with .generated.")
+      if decl.checked == :never
+        raise BuilderError.new("You can't use .on_failure with .checked(:never) because .on_failure will have no effect.")
       end
 
-      # TODO consider validating that :notify is a project that sentry knows about,
-      # as per https://git.corp.stripe.com/stripe-internal/pay-server/blob/master/lib/event/job/sentry_job.rb#L125
-      if !notify || notify == ''
-        raise SigBuilderError.new("You can't provide an empty notify to .soft().")
-      end
-
-      decl.soft_notify = notify
-
-      self
-    end
-
-    def generated
-      check_live!
-
-      if !decl.generated.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't call .generated multiple times in a signature.")
-      end
-      if !decl.checked.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't use .generated with .checked.")
-      end
-      if !decl.soft_notify.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't use .generated with .soft.")
-      end
-
-      decl.generated = true
+      decl.on_failure = args
 
       self
     end
@@ -149,13 +118,17 @@ module T::Private::Methods
       when Modes.standard
         decl.mode = Modes.abstract
       when Modes.abstract
-        raise SigBuilderError.new(".abstract cannot be repeated in a single signature")
+        raise BuilderError.new(".abstract cannot be repeated in a single signature")
       else
-        raise SigBuilderError.new("`.abstract` cannot be combined with any of `.override`, `.implementation`, or "\
-              "`.overridable`.")
+        raise BuilderError.new("`.abstract` cannot be combined with `.override` or `.overridable`.")
       end
 
       self
+    end
+
+    def final
+      check_live!
+      raise BuilderError.new("The syntax for declaring a method final is `sig(:final) {...}`, not `sig {final. ...}`")
     end
 
     def override(allow_incompatible: false)
@@ -165,11 +138,12 @@ module T::Private::Methods
       when Modes.standard
         decl.mode = Modes.override
         decl.override_allow_incompatible = allow_incompatible
-      when Modes.override
-        raise SigBuilderError.new(".override cannot be repeated in a single signature")
+      when Modes.override, Modes.overridable_override
+        raise BuilderError.new(".override cannot be repeated in a single signature")
+      when Modes.overridable
+        decl.mode = Modes.overridable_override
       else
-        raise SigBuilderError.new("`.override` cannot be combined with any of `.abstract`, `.implementation`, or "\
-              "`.overridable`.")
+        raise BuilderError.new("`.override` cannot be combined with `.abstract`.")
       end
 
       self
@@ -179,31 +153,14 @@ module T::Private::Methods
       check_live!
 
       case decl.mode
-      when Modes.abstract, Modes.override
-        raise SigBuilderError.new("`.overridable` cannot be combined with `.#{decl.mode}`")
+      when Modes.abstract
+        raise BuilderError.new("`.overridable` cannot be combined with `.#{decl.mode}`")
+      when Modes.override
+        decl.mode = Modes.overridable_override
       when Modes.standard
         decl.mode = Modes.overridable
-      when Modes.implementation
-        decl.mode = Modes.overridable_implementation
-      when Modes.overridable, Modes.overridable_implementation
-        raise SigBuilderError.new(".overridable cannot be repeated in a single signature")
-      end
-
-      self
-    end
-
-    def implementation
-      check_live!
-
-      case decl.mode
-      when Modes.abstract, Modes.override
-        raise SigBuilderError.new("`.implementation` cannot be combined with `.#{decl.mode}`")
-      when Modes.standard
-        decl.mode = Modes.implementation
-      when Modes.overridable
-        decl.mode = Modes.overridable_implementation
-      when Modes.implementation, Modes.overridable_implementation
-        raise SigBuilderError.new(".implementation cannot be repeated in a single signature")
+      when Modes.overridable, Modes.overridable_override
+        raise BuilderError.new(".overridable cannot be repeated in a single signature")
       end
 
       self
@@ -224,12 +181,11 @@ module T::Private::Methods
       check_live!
 
       names.each do |name|
-        raise SigBuilderError.new("not a symbol: #{name}") unless name.is_a?(Symbol)
-        name.is_a?(Symbol)
+        raise BuilderError.new("not a symbol: #{name}") unless name.is_a?(Symbol)
       end
 
       if !decl.type_parameters.equal?(ARG_NOT_PROVIDED)
-        raise SigBuilderError.new("You can't call .type_parameters multiple times in a signature.")
+        raise BuilderError.new("You can't call .type_parameters multiple times in a signature.")
       end
 
       decl.type_parameters = names
@@ -240,17 +196,22 @@ module T::Private::Methods
     def finalize!
       check_live!
 
+      if decl.returns.equal?(ARG_NOT_PROVIDED)
+        raise BuilderError.new("You must provide a return type; use the `.returns` or `.void` builder methods.")
+      end
+
       if decl.bind.equal?(ARG_NOT_PROVIDED)
         decl.bind = nil
       end
       if decl.checked.equal?(ARG_NOT_PROVIDED)
-        decl.checked = :always
+        default_checked_level = T::Private::RuntimeLevels.default_checked_level
+        if default_checked_level == :never && !decl.on_failure.equal?(ARG_NOT_PROVIDED)
+          raise BuilderError.new("To use .on_failure you must additionally call .checked(:tests) or .checked(:always), otherwise, the .on_failure has no effect.")
+        end
+        decl.checked = default_checked_level
       end
-      if decl.soft_notify.equal?(ARG_NOT_PROVIDED)
-        decl.soft_notify = nil
-      end
-      if decl.generated.equal?(ARG_NOT_PROVIDED)
-        decl.generated = false
+      if decl.on_failure.equal?(ARG_NOT_PROVIDED)
+        decl.on_failure = nil
       end
       if decl.params.equal?(ARG_NOT_PROVIDED)
         decl.params = {}

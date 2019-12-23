@@ -3,9 +3,9 @@
   --sorbet-purple-2: #4f4397;
   --sorbet-purple-3: #6255b0;
 
-  --sorbet-purple-4: #8673FF;
-  --sorbet-purple-5: #997AFC; /* currently unused */
-  --sorbet-purple-6: #B4A8FF;
+  --sorbet-purple-4: #8673ff;
+  --sorbet-purple-5: #997afc; /* currently unused */
+  --sorbet-purple-6: #b4a8ff;
 }
 
 .homeContainer {
@@ -20,10 +20,6 @@
   padding: 4em 20px;
 }
 
-.wrapper {
-  max-width: 1100px;
-}
-
 .homeContainer .homeWrapper .projectLogo {
   padding: 0;
 }
@@ -32,17 +28,17 @@
   width: 200px;
 }
 
-.container .wrapper .threeByGridBlock {
+.container .threeByGridBlock {
   text-align: left;
   margin-bottom: 20px;
 }
 
-.container .wrapper .threeByGridBlock h2 {
+.container .threeByGridBlock h2 {
   margin-top: 0;
   text-align: left;
 }
 
-.container .wrapper .threeByGridBlock h2 p {
+.container .threeByGridBlock h2 p {
   margin-top: 0;
   text-align: left;
   margin-bottom: 0;
@@ -57,16 +53,21 @@
 }
 
 .homeContainer .button {
-  border-color: #ffffff;
+  border-color: var(--sorbet-purple-6);
+  border-radius: 8px;
+  border-width: 2px;
   color: #ffffff;
+  font-size: 18px;
+  font-weight: 700;
+  padding: 14px 27px;
 }
 
 .homeContainer .button:hover {
   color: var(--sorbet-purple-2);
-  background: #ffffff;
+  background: var(--sorbet-purple-6);
 }
 
-.homeContainer a, .footer a {
+.homeContainer a {
   color: var(--sorbet-purple-6);
 }
 
@@ -77,8 +78,15 @@
   background: var(--sorbet-purple-3);
 }
 
-.featuresContainer .wrapper .threeByGridBlock {
+.featuresContainer .threeByGridBlock {
   margin-bottom: 0;
+}
+
+.featuresContainer code {
+  background-color: initial;
+  border-radius: initial;
+  font-size: initial;
+  padding: initial;
 }
 
 /* Page sections */
@@ -94,7 +102,7 @@
 }
 
 .row:after {
-  content: "";
+  content: '';
   display: table;
   clear: both;
 }
@@ -112,6 +120,20 @@
   padding-right: 20px;
 }
 
+.StripeCallout {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+}
+
+.StripeCallout-Logo {
+  max-height: 175px;
+}
+
+.StripeCallout-Description {
+  flex-basis: 50%;
+}
+
 /* Responsive styles*/
 @media only screen and (min-device-width: 360px) and (max-device-width: 736px) {
 }
@@ -127,6 +149,10 @@
 }
 @media only screen and (max-width: 700px) {
   .pageSectionColumns {
+    flex-direction: column;
+  }
+
+  .StripeCallout {
     flex-direction: column;
   }
 

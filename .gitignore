@@ -1,4 +1,5 @@
 /bazel-*
+/.bazelrc.local
 /compile_commands.json
 /.gdb_history
 /tags
@@ -6,6 +7,7 @@
 # CI puts a checkout here for testing.
 /pay-server
 
+.idea/
 .vscode/
 
 /website/lib/core/metadata.js
@@ -22,8 +24,13 @@
 /fuzz_crashers
 
 # We are bulding gems here, so don't commit these things
-Gemfile.lock
+gems/sorbet/Gemfile.lock
+gems/sorbet-static/Gemfile.lock
+gems/sorbet-runtime/Gemfile.lock
 *.gem
 
 # To distribute sorbet, we copy the built C++ binary here.
 /gems/sorbet-static/libexec/sorbet
+
+# clangd caches data in this folder.
+/.clangd

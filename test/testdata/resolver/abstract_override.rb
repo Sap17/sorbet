@@ -1,7 +1,7 @@
 # typed: true
-# disable-fast-path: true
 module Interface
   extend T::Sig
+  extend T::Helpers
 
   interface!
 
@@ -15,6 +15,7 @@ end
 
 module InterfaceChild
   extend T::Sig
+  extend T::Helpers
 
   interface!
   include Interface
@@ -28,16 +29,18 @@ end
 
 class Abstract
   extend T::Sig
+  extend T::Helpers
 
   abstract!
   include InterfaceChild
 end
 
-class AbstractBadChild < Abstract # error: Missing definition for abstract method `Interface#a_method`
+class AbstractBadChild < Abstract # error-with-dupes: Missing definition for abstract method `Interface#a_method`
 end
 
 class AbstractChild < Abstract
   extend T::Sig
+  extend T::Helpers
 
   abstract!
 end
@@ -57,6 +60,7 @@ end
 
 class AbstractSingleton
   extend T::Sig
+  extend T::Helpers
 
   abstract!
 
@@ -64,7 +68,7 @@ class AbstractSingleton
   def self.abstract_method; end
 end
 
-class AbstractSingletonBadChild < AbstractSingleton # error: Missing definition for abstract method
+class AbstractSingletonBadChild < AbstractSingleton # error-with-dupes: Missing definition for abstract method
 end
 
 class AbstractSingletonGoodChild < AbstractSingleton

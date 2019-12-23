@@ -1,8 +1,8 @@
 cc_library(
     name = "options",
     srcs = [
-        "FileFlatMapper.cc",
-        "FileFlatMapper.h",
+        "ConfigParser.cc",
+        "ConfigParser.h",
         "options.cc",
     ],
     hdrs = ["options.h"],
@@ -13,10 +13,30 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         "//core",
-        "//third_party/licences",
+        "//third_party/licenses",
         "//version",
         "@cxxopts",
         "@spdlog",
         "@yaml_cpp",
+    ],
+)
+
+cc_test(
+    name = "options_test",
+    size = "small",
+    srcs = glob([
+        "test/*.cc",
+    ]),
+    copts = ["-Iexternal/gtest/include"],
+    linkstatic = select({
+        "//tools/config:linkshared": 0,
+        "//conditions:default": 1,
+    }),
+    visibility = ["//tools:__pkg__"],
+    deps = [
+        "//core",
+        "//main/options",
+        "@com_google_googletest//:gtest",
+        "@com_google_googletest//:gtest_main",
     ],
 )

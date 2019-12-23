@@ -200,9 +200,14 @@ class Sorbet::Private::GemLoader
     'roo' => proc do
       my_require 'roo'
       [
-        Roo::Excel,
         Roo::Spreadsheet,
       ]
+      version = Bundler.load.specs['roo'][0].stub.version
+      if Gem::Requirement.create('<2.0.0').satisfied_by?(version)
+        [
+          Roo::Excel,
+        ]
+      end
     end,
     'rack-protection' => proc do
       my_require 'rack-protection'
@@ -366,6 +371,15 @@ class Sorbet::Private::GemLoader
       my_require 'sequel'
       my_require 'sequel/sql'
     end,
+    'sequel_pg' => proc do
+      # sequel_pg assumes that it was required by the adapter class in sequel
+      # (i.e., it's not mean to be required manually). But also, sequel lazily
+      # loads the adapter class depending on the scheme of the database being
+      # connected to. Since 'srb init' never only requires and never connects,
+      # we need to manually load the adapter class ourself, which will then
+      # transitively load sequel_pg
+      my_require 'sequel/adapters/postgres'
+    end,
     'will_paginate' => proc do
       my_require 'will_paginate'
       my_require 'will_paginate/collection'
@@ -464,47 +478,65 @@ class Sorbet::Private::GemLoader
       my_require 'html_truncator'
     end,
     'actionpack' => proc do
+      my_require 'actionpack'
       [
         ActionController::Base,
         ActionDispatch::SystemTestCase,
       ]
     end,
     'actionmailer' => proc do
+      my_require 'actionmailer'
       [
         ActionMailer::Base,
         ActionMailer::MessageDelivery,
       ]
     end,
     'activejob' => proc do
+      my_require 'activejob'
       [
         ActiveJob::Base,
       ]
     end,
     'activerecord' => proc do
+      my_require 'activerecord'
       [
         ActiveRecord::Schema,
         ActiveRecord::Migration::Current,
       ]
     end,
     'actionview' => proc do
+      my_require 'actionview'
       [
         ActionView::TestCase,
       ]
     end,
     'rdoc' => proc do
+      my_require 'rdoc'
       [
         RDoc::Options,
       ]
     end,
     'paul_revere' => proc do
+      my_require 'paul_revere'
       [
         Announcement,
       ]
     end,
     'clearance' => proc do
+      my_require 'clearance'
       [
         ClearanceMailer,
       ]
+    end,
+    'webmock' => proc do
+      my_require 'webmock'
+      WebMock.singleton_class.send(:define_method, :enable!) do
+        puts "\nWebMock.enable! is incompatible with Sorbet. Please don't unconditionally do it on requiring this file."
+      end
+    end,
+    'codecov' => proc do
+      my_require 'simplecov'
+      my_require 'codecov'
     end,
   }
 
@@ -527,19 +559,40 @@ class Sorbet::Private::GemLoader
         puts "NameError: #{e}"
       end
     else
-      require gem # rubocop:disable PrisonGuard/NoDynamicRequire
+      begin
+        require gem # rubocop:disable PrisonGuard/NoDynamicRequire
+      rescue NameError => e
+        puts "NameError: #{e}"
+      end
     end
   end
 
   def self.require_all_gems
     require 'bundler/setup'
-    Bundler.require
 
-    Bundler.load.specs.sort_by(&:name).each do |gemspec|
+    # Do not load gems in Gemfile where require is false
+    deps = Bundler.load.dependencies.reject { |dep| dep.autorequire && dep.autorequire.empty? }
+    specs = deps.flat_map do |dep|
+      begin
+        dep.to_specs
+      rescue Gem::MissingSpecError
+        []
+      end
+    end.to_set
+
+    specs.sort_by(&:name).each do |gemspec|
       begin
         require_gem(gemspec.name)
-      rescue LoadError
+      rescue LoadError => e
+        puts "LoadError: #{e}"
+      rescue NameError => e
+        puts "NameError: #{e}"
       end
+    end
+    begin
+      Bundler.require
+    rescue NameError => e
+      puts "NameError: #{e}"
     end
   end
 end

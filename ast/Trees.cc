@@ -1,4 +1,5 @@
 #include "ast/Trees.h"
+#include "common/typecase.h"
 #include "core/Symbols.h"
 #include <sstream>
 #include <utility>
@@ -16,7 +17,6 @@ template class std::unique_ptr<sorbet::ast::Next>;
 template class std::unique_ptr<sorbet::ast::Return>;
 template class std::unique_ptr<sorbet::ast::RescueCase>;
 template class std::unique_ptr<sorbet::ast::Rescue>;
-template class std::unique_ptr<sorbet::ast::Field>;
 template class std::unique_ptr<sorbet::ast::Local>;
 template class std::unique_ptr<sorbet::ast::UnresolvedIdent>;
 template class std::unique_ptr<sorbet::ast::RestArg>;
@@ -149,11 +149,6 @@ Rescue::Rescue(core::Loc loc, unique_ptr<Expression> body, RESCUE_CASE_store res
     _sanityCheck();
 }
 
-Field::Field(core::Loc loc, core::SymbolRef symbol) : Reference(loc), symbol(symbol) {
-    categoryCounterInc("trees", "field");
-    _sanityCheck();
-}
-
 Local::Local(core::Loc loc, core::LocalVariable localVariable1) : Reference(loc), localVariable(localVariable1) {
     categoryCounterInc("trees", "local");
     _sanityCheck();
@@ -173,8 +168,8 @@ Assign::Assign(core::Loc loc, unique_ptr<Expression> lhs, unique_ptr<Expression>
 }
 
 Send::Send(core::Loc loc, unique_ptr<Expression> recv, core::NameRef fun, Send::ARGS_store args,
-           unique_ptr<Block> block)
-    : Expression(loc), fun(fun), recv(std::move(recv)), args(std::move(args)), block(std::move(block)) {
+           unique_ptr<Block> block, u4 flags)
+    : Expression(loc), fun(fun), flags(flags), recv(std::move(recv)), args(std::move(args)), block(std::move(block)) {
     categoryCounterInc("trees", "send");
     if (block) {
         counterInc("trees.send.with_block");
@@ -183,8 +178,8 @@ Send::Send(core::Loc loc, unique_ptr<Expression> recv, core::NameRef fun, Send::
     _sanityCheck();
 }
 
-Cast::Cast(core::Loc loc, const core::TypePtr &ty, unique_ptr<Expression> arg, core::NameRef cast)
-    : Expression(loc), cast(cast), type(ty), arg(std::move(arg)) {
+Cast::Cast(core::Loc loc, core::TypePtr ty, unique_ptr<Expression> arg, core::NameRef cast)
+    : Expression(loc), cast(cast), type(std::move(ty)), arg(std::move(arg)) {
     categoryCounterInc("trees", "cast");
     _sanityCheck();
 }
@@ -340,7 +335,7 @@ string ClassDef::showRaw(const core::GlobalState &gs, int tabs) {
     buf << "kind = " << (kind == ClassDefKind::Module ? "module" : "class") << '\n';
     printTabs(buf, tabs + 1);
     buf << "name = " << name->showRaw(gs, tabs + 1) << "<"
-        << this->symbol.dataAllowingNone(gs)->name.data(gs)->toString(gs) << ">" << '\n';
+        << this->symbol.dataAllowingNone(gs)->name.data(gs)->showRaw(gs) << ">" << '\n';
     printTabs(buf, tabs + 1);
     buf << "ancestors = [";
     bool first = true;
@@ -412,8 +407,11 @@ string MethodDef::toStringWithTabs(const core::GlobalState &gs, int tabs) const 
     } else {
         buf << "def ";
     }
+    buf << name.data(gs)->toString(gs);
     auto &data = this->symbol.dataAllowingNone(gs);
-    buf << name.data(gs)->toString(gs) << "<" << data->name.data(gs)->toString(gs) << ">";
+    if (name != data->name) {
+        buf << "<" << data->name.data(gs)->toString(gs) << ">";
+    }
     buf << "(";
     bool first = true;
     if (this->symbol == core::Symbols::todo()) {
@@ -430,7 +428,7 @@ string MethodDef::toStringWithTabs(const core::GlobalState &gs, int tabs) const 
                 buf << ", ";
             }
             first = false;
-            buf << a.data(gs)->argumentName(gs);
+            buf << a.argumentName(gs);
         }
     }
     buf << ")" << '\n';
@@ -449,7 +447,7 @@ string MethodDef::showRaw(const core::GlobalState &gs, int tabs) {
     buf << "flags =";
     const pair<int, string_view> flags[] = {
         {SelfMethod, "self"sv},
-        {DSLSynthesized, "dsl"sv},
+        {RewriterSynthesized, "rewriter"sv},
     };
     for (auto &ent : flags) {
         if ((this->flags & ent.first) != 0) {
@@ -462,8 +460,8 @@ string MethodDef::showRaw(const core::GlobalState &gs, int tabs) {
     buf << '\n';
 
     printTabs(buf, tabs + 1);
-    buf << "name = " << name.data(gs)->toString(gs) << "<"
-        << this->symbol.dataAllowingNone(gs)->name.data(gs)->toString(gs) << ">" << '\n';
+    buf << "name = " << name.data(gs)->showRaw(gs) << "<"
+        << this->symbol.dataAllowingNone(gs)->name.data(gs)->showRaw(gs) << ">" << '\n';
     printTabs(buf, tabs + 1);
     buf << "args = [";
     bool first = true;
@@ -574,7 +572,7 @@ string UnresolvedConstantLit::showRaw(const core::GlobalState &gs, int tabs) {
     printTabs(buf, tabs + 1);
     buf << "scope = " << this->scope->showRaw(gs, tabs + 1) << '\n';
     printTabs(buf, tabs + 1);
-    buf << "cnst = " << this->cnst.data(gs)->toString(gs) << '\n';
+    buf << "cnst = " << this->cnst.data(gs)->showRaw(gs) << '\n';
     printTabs(buf, tabs);
     buf << "}";
     return buf.str();
@@ -605,10 +603,6 @@ string ConstantLit::showRaw(const core::GlobalState &gs, int tabs) {
     return buf.str();
 }
 
-string Field::toStringWithTabs(const core::GlobalState &gs, int tabs) const {
-    return this->symbol.dataAllowingNone(gs)->showFullName(gs);
-}
-
 string Local::toStringWithTabs(const core::GlobalState &gs, int tabs) const {
     return this->localVariable.toString(gs);
 }
@@ -622,21 +616,11 @@ bool Expression::isSelfReference() const {
     return asLocal && asLocal->localVariable == core::LocalVariable::selfVariable();
 }
 
-string Field::showRaw(const core::GlobalState &gs, int tabs) {
-    stringstream buf;
-    buf << nodeName() << "{" << '\n';
-    printTabs(buf, tabs + 1);
-    buf << "symbol = " << this->symbol.dataAllowingNone(gs)->name.data(gs)->toString(gs) << '\n';
-    printTabs(buf, tabs);
-    buf << "}";
-    return buf.str();
-}
-
 string Local::showRaw(const core::GlobalState &gs, int tabs) {
     stringstream buf;
     buf << nodeName() << "{" << '\n';
     printTabs(buf, tabs + 1);
-    buf << "localVariable = " << this->localVariable.toString(gs) << '\n';
+    buf << "localVariable = " << this->localVariable.showRaw(gs) << '\n';
     printTabs(buf, tabs);
     buf << "}";
     return buf.str();
@@ -667,7 +651,7 @@ string UnresolvedIdent::showRaw(const core::GlobalState &gs, int tabs) {
     }
     buf << '\n';
     printTabs(buf, tabs + 1);
-    buf << "name = " << this->name.toString(gs) << '\n';
+    buf << "name = " << this->name.showRaw(gs) << '\n';
     printTabs(buf, tabs);
     buf << "}";
 
@@ -837,7 +821,7 @@ string Send::showRaw(const core::GlobalState &gs, int tabs) {
     printTabs(buf, tabs + 1);
     buf << "recv = " << this->recv->showRaw(gs, tabs + 1) << '\n';
     printTabs(buf, tabs + 1);
-    buf << "fun = " << this->fun.data(gs)->toString(gs) << '\n';
+    buf << "fun = " << this->fun.data(gs)->showRaw(gs) << '\n';
     printTabs(buf, tabs + 1);
     buf << "block = ";
     if (this->block) {
@@ -871,7 +855,7 @@ string Cast::showRaw(const core::GlobalState &gs, int tabs) {
     stringstream buf;
     buf << nodeName() << "{" << '\n';
     printTabs(buf, tabs + 2);
-    buf << "cast = " << this->cast.toString(gs) << "," << '\n';
+    buf << "cast = " << this->cast.showRaw(gs) << "," << '\n';
     printTabs(buf, tabs + 2);
     buf << "arg = " << this->arg->showRaw(gs, tabs + 2) << '\n';
     printTabs(buf, tabs + 2);
@@ -965,28 +949,7 @@ string Array::toStringWithTabs(const core::GlobalState &gs, int tabs) const {
 string Block::toStringWithTabs(const core::GlobalState &gs, int tabs) const {
     stringstream buf;
     buf << " do |";
-    if (!this->symbol.exists()) {
-        printElems(gs, buf, this->args, tabs + 1);
-    } else {
-        bool first = true;
-        for (auto &argSym : this->symbol.data(gs)->arguments()) {
-            auto &arg = argSym.data(gs);
-            if (!first) {
-                buf << ", ";
-            }
-            first = false;
-            if (arg->isBlockArgument()) {
-                buf << "&";
-            }
-            if (arg->isRepeated()) {
-                buf << "*";
-            }
-            buf << arg->argumentName(gs);
-            if (arg->isKeyword()) {
-                buf << ":";
-            }
-        }
-    }
+    printElems(gs, buf, this->args, tabs + 1);
     buf << "|" << '\n';
     printTabs(buf, tabs + 1);
     buf << this->body->toStringWithTabs(gs, tabs + 1) << '\n';
@@ -1000,15 +963,9 @@ string Block::showRaw(const core::GlobalState &gs, int tabs) {
     buf << nodeName() << " {" << '\n';
     printTabs(buf, tabs + 1);
     buf << "args = [" << '\n';
-    if (!this->symbol.exists()) {
-        for (auto &a : this->args) {
-            printTabs(buf, tabs + 2);
-            buf << a->showRaw(gs, tabs + 2) << '\n';
-        }
-    } else {
-        for (auto &argSym : this->symbol.data(gs)->arguments()) {
-            buf << argSym.data(gs)->toStringWithTabs(gs, tabs + 2);
-        }
+    for (auto &a : this->args) {
+        printTabs(buf, tabs + 2);
+        buf << a->showRaw(gs, tabs + 2) << '\n';
     }
     printTabs(buf, tabs + 1);
     buf << "]" << '\n';
@@ -1028,7 +985,12 @@ string KeywordArg::toStringWithTabs(const core::GlobalState &gs, int tabs) const
 }
 
 string OptionalArg::toStringWithTabs(const core::GlobalState &gs, int tabs) const {
-    return this->expr->toStringWithTabs(gs, tabs) + " = " + this->default_->toStringWithTabs(gs, tabs);
+    stringstream buf;
+    buf << this->expr->toStringWithTabs(gs, tabs);
+    if (this->default_) {
+        buf << " = " << this->default_->toStringWithTabs(gs, tabs);
+    }
+    return buf.str();
 }
 
 string ShadowArg::toStringWithTabs(const core::GlobalState &gs, int tabs) const {
@@ -1060,9 +1022,6 @@ string If::nodeName() {
 }
 string While::nodeName() {
     return "While";
-}
-string Field::nodeName() {
-    return "Field";
 }
 string UnresolvedIdent::nodeName() {
     return "UnresolvedIdent";
@@ -1186,8 +1145,10 @@ string OptionalArg::showRaw(const core::GlobalState &gs, int tabs) {
     buf << nodeName() << "{" << '\n';
     printTabs(buf, tabs + 1);
     buf << "expr = " + expr->showRaw(gs, tabs + 1) << '\n';
-    printTabs(buf, tabs + 1);
-    buf << "default_ = " + default_->showRaw(gs, tabs + 1) << '\n';
+    if (default_) {
+        printTabs(buf, tabs + 1);
+        buf << "default_ = " + default_->showRaw(gs, tabs + 1) << '\n';
+    }
     printTabs(buf, tabs);
     buf << "}";
 
@@ -1212,6 +1173,20 @@ string ShadowArg::nodeName() {
 
 string BlockArg::nodeName() {
     return "BlockArg";
+}
+
+ParsedFilesOrCancelled::ParsedFilesOrCancelled() : trees(nullopt){};
+ParsedFilesOrCancelled::ParsedFilesOrCancelled(std::vector<ParsedFile> &&trees) : trees(move(trees)) {}
+
+bool ParsedFilesOrCancelled::hasResult() const {
+    return trees.has_value();
+}
+
+vector<ParsedFile> &ParsedFilesOrCancelled::result() {
+    if (trees.has_value()) {
+        return trees.value();
+    }
+    Exception::raise("Attempted to retrieve result of an AST pass that did not complete.");
 }
 
 } // namespace sorbet::ast

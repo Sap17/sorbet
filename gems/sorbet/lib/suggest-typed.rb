@@ -15,14 +15,32 @@ class Sorbet::Private::SuggestTyped
       if suggest_typed
         return true
       end
+
+      if count == 50
+        puts "Adding `typed:` sigils did not converge after 50 tries."
+        STDOUT.write("Would you like to continue anyway? [Y/n] ")
+        if STDIN.isatty && STDOUT.isatty
+          begin
+            input = STDIN.gets&.strip
+            if input.nil? || (input != '' && input != 'y' && input != 'Y')
+              return false
+            end
+          rescue Interrupt
+            return false
+          end
+        else
+          puts "Not running interactively, continuing."
+        end
+      end
     end
+
     puts "Adding `typed:` sigils did not converge after 100 tries."
     false
   end
 
   def self.suggest_typed
     IO.popen(
-      ['srb', 'tc', '--suggest-typed', '--error-white-list=7022', '--typed=strict', '--silence-dev-message', '-a'],
+      [File.realpath("#{__dir__}/../bin/srb"), 'tc', '--suggest-typed', '--error-white-list=7022', '--typed=strict', '--silence-dev-message', '-a'],
       err: [:child, :out],
     ) do |io|
       out = io.read

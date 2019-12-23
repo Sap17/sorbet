@@ -1,7 +1,9 @@
+#include "common/Timer.h"
 #include "common/common.h"
 #include "core/Loc.h"
 #include "core/TypeConstraint.h"
 #include "core/errors/infer.h"
+#include "core/lsp/QueryResponse.h"
 #include "infer/SigSuggestion.h"
 #include "infer/environment.h"
 #include "infer/infer.h"
@@ -10,6 +12,8 @@ using namespace std;
 namespace sorbet::infer {
 
 unique_ptr<cfg::CFG> Inference::run(core::Context ctx, unique_ptr<cfg::CFG> cfg) {
+    Timer timeit(ctx.state.tracer(), "Inference::run",
+                 {{"func", (string)cfg->symbol.data(ctx)->toStringFullName(ctx)}});
     ENFORCE(cfg->symbol == ctx.owner);
     auto methodLoc = cfg->symbol.data(ctx)->loc();
     prodCounterInc("types.input.methods.typechecked");
@@ -57,11 +61,11 @@ unique_ptr<cfg::CFG> Inference::run(core::Context ctx, unique_ptr<cfg::CFG> cfg)
         }
     } else {
         auto enclosingClass = cfg->symbol.data(ctx)->enclosingClass(ctx);
-        methodReturnType =
-            core::Types::instantiate(ctx,
-                                     core::Types::resultTypeAsSeenFrom(ctx, cfg->symbol, enclosingClass,
-                                                                       enclosingClass.data(ctx)->selfTypeArgs(ctx)),
-                                     *constr);
+        methodReturnType = core::Types::instantiate(
+            ctx,
+            core::Types::resultTypeAsSeenFrom(ctx, cfg->symbol.data(ctx)->resultType, cfg->symbol.data(ctx)->owner,
+                                              enclosingClass, enclosingClass.data(ctx)->selfTypeArgs(ctx)),
+            *constr);
         methodReturnType = core::Types::replaceSelfType(ctx, methodReturnType, enclosingClass.data(ctx)->selfType(ctx));
     }
 
@@ -144,6 +148,9 @@ unique_ptr<cfg::CFG> Inference::run(core::Context ctx, unique_ptr<cfg::CFG> cfg)
                     if (expr.value->isSynthetic) {
                         continue;
                     }
+                    if (cfg::isa_instruction<cfg::TAbsurd>(expr.value.get())) {
+                        continue;
+                    }
                     if (auto e = ctx.state.beginError(expr.loc, core::errors::Infer::DeadBranchInferencer)) {
                         e.setHeader("This code is unreachable");
                     }
@@ -185,7 +192,7 @@ unique_ptr<cfg::CFG> Inference::run(core::Context ctx, unique_ptr<cfg::CFG> cfg)
             } else if (current.isDead && !bind.value->isSynthetic) {
                 if (auto e = ctx.state.beginError(bind.loc, core::errors::Infer::DeadBranchInferencer)) {
                     e.setHeader("This code is unreachable");
-                    e.addErrorLine(madeBlockDead, "This expression can never be computed");
+                    e.addErrorLine(madeBlockDead, "This expression always raises or can never be computed");
                 }
                 break;
             }
@@ -210,10 +217,16 @@ unique_ptr<cfg::CFG> Inference::run(core::Context ctx, unique_ptr<cfg::CFG> cfg)
         counterInc("infer.methods_typechecked.no_errors");
     }
 
-    if ((missingReturnType || cfg->symbol.data(ctx)->hasGeneratedSig()) && guessTypes) {
+    if (missingReturnType && guessTypes) {
         if (auto e = ctx.state.beginError(cfg->symbol.data(ctx)->loc(), core::errors::Infer::UntypedMethod)) {
-            e.setHeader("This function does not have a `sig`");
-            SigSuggestion::maybeSuggestSig(ctx, e, cfg, methodReturnType, *constr);
+            e.setHeader("This function does not have a `{}`", "sig");
+            auto maybeAutocorrect = SigSuggestion::maybeSuggestSig(ctx, cfg, methodReturnType, *constr);
+            if (maybeAutocorrect.has_value()) {
+                e.addAutocorrect(move(maybeAutocorrect.value()));
+            }
+        } else if (ctx.state.lspQuery.matchesSuggestSig(cfg->symbol)) {
+            // Force maybeSuggestSig to run just to respond to the query (discard the result)
+            SigSuggestion::maybeSuggestSig(ctx, cfg, methodReturnType, *constr);
         }
     }
 

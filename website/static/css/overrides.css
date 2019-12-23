@@ -16,6 +16,16 @@ blockquote.monotone {
 }
 
 /*
+ * Docusaurus uses blockquote to show warnings / yellow callouts.
+ * Sometimes, we want it to stand out even more.
+ */
+blockquote.red,
+.red blockquote {
+  background-color: rgba(255, 109, 84, 0.3);
+  border-color: rgb(255, 132, 132);
+}
+
+/*
  * By default, the link color is the same as the primaryColor.
  * For us, this color is too dark, and links don't pop enough.
  * Thus, we override the link color to be more vibrant.
@@ -26,6 +36,19 @@ a {
 a:hover {
   color: var(--sorbet-purple-4);
   text-decoration: underline;
+}
+
+/*
+ * The default footer is gray. We override it in a few ways.
+ */
+.nav-footer {
+  background-color: var(--sorbet-purple-3);
+  color: #ffffff;
+  font-size: 16px;
+}
+
+.nav-footer a {
+  color: var(--sorbet-purple-6);
 }
 
 /* Don't highlight the logo in the header on hover:
@@ -66,7 +89,68 @@ sup {
   }
 }
 
-@media only screen and (max-width: 1023px) {
+/*
+ * The .wrapper class defaults to max-width: 1400px on large screens (>1500px).
+ * We never want to use more than 1100px, even at that breakpoint.
+ */
+@media only screen and (min-width: 1500px) {
+  .wrapper {
+    max-width: 1100px;
+  }
+}
+
+/*
+ * The default showcase section heading uses our one of the colors from our
+ * siteConfig.js. This color only looks good in the headers for us, not in text
+ * colors, so we're reseting it to initial (black) here.
+ */
+.productShowcaseSection h2 {
+  color: initial;
+}
+
+/*
+ * This is needed to the logos to play nicely with company names that wrap, so
+ * that the images line up with each other.
+ */
+.productShowcaseSection .logos {
+  align-items: flex-start;
+}
+
+/*
+ * To avoid squashing non-square logos
+ */
+.productShowcaseSection .logos img {
+  height: 110px;
+  width: auto;
+}
+
+@media only screen and (max-width: 735px) {
+  .productShowcaseSection .logos img {
+    height: 64px;
+    width: auto;
+  }
+}
+
+/*
+ * Lets us stack the images + captions in a column.
+ */
+.productShowcaseSection .link {
+  display: flex;
+  flex-direction: column;
+
+  /* 110px for the image + (2 x 20px) for the padding. */
+  max-width: 150px;
+}
+
+/*
+ * Lets us stack the image + captions in a column,
+ * at a mobile width breakpoint.
+ */
+@media only screen and (max-width: 735px) {
+  .productShowcaseSection .link {
+    /* 64px for the image + (2 x 20px) for the padding. */
+    max-width: 104px;
+  }
 }
 
 /*

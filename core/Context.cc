@@ -1,9 +1,12 @@
 #include "core/Context.h"
+#include "common/FileOps.h"
+#include "common/Timer.h"
+#include "common/common.h"
+#include "core/GlobalSubstitution.h"
 #include "core/Hashing.h"
 #include "core/Types.h"
 #include "core/Unfreeze.h"
-
-#include "common/common.h"
+#include "main/pipeline/semantic_extension/SemanticExtension.h"
 #include <algorithm>
 #include <string>
 
@@ -17,29 +20,31 @@ namespace sorbet::core {
 
 SymbolRef MutableContext::selfClass() {
     SymbolData data = this->owner.data(this->state);
-    if (data->isClass()) {
+    if (data->isClassOrModule()) {
         return data->singletonClass(this->state);
     }
     return data->enclosingClass(this->state);
 }
 
-bool Context::permitOverloadDefinitions() const {
+bool Context::permitOverloadDefinitions(FileRef sigLoc) const {
     if (!owner.exists()) {
         return false;
     }
     for (auto loc : owner.data(*this)->locs()) {
         auto &file = loc.file().data(*this);
         constexpr string_view whitelistedTest = "overloads_test.rb"sv;
-        if ((file.isPayload() && owner != Symbols::root()) || FileOps::getFileName(file.path()) == whitelistedTest) {
+        if (((file.isPayload() || file.isStdlib()) && owner != Symbols::root() &&
+             (owner != Symbols::Object() || sigLoc.data(*this).isStdlib())) ||
+            FileOps::getFileName(file.path()) == whitelistedTest) {
             return true;
         }
     }
     return false;
 }
 
-bool MutableContext::permitOverloadDefinitions() const {
+bool MutableContext::permitOverloadDefinitions(FileRef sigLoc) const {
     Context self(*this);
-    return self.permitOverloadDefinitions();
+    return self.permitOverloadDefinitions(sigLoc);
 }
 
 Context::Context(const MutableContext &other) noexcept : state(other.state), owner(other.owner) {}
@@ -53,14 +58,13 @@ void MutableContext::trace(string_view msg) const {
 }
 
 Context Context::withOwner(SymbolRef sym) const {
-    Context r = Context(*this);
-    r.owner = sym;
-    return r;
+    return Context(state, sym);
 }
 
 GlobalSubstitution::GlobalSubstitution(const GlobalState &from, GlobalState &to,
                                        const GlobalState *optionalCommonParent)
     : toGlobalStateId(to.globalStateId) {
+    Timer timeit(to.tracer(), "GlobalSubstitution.new", from.creation);
     ENFORCE(toGlobalStateId != 0, "toGlobalStateId is only used for sanity checks, but should always be set.");
     ENFORCE(from.symbols.size() == to.symbols.size(), "Can't substitute symbols yet");
 
@@ -128,6 +132,10 @@ GlobalSubstitution::GlobalSubstitution(const GlobalState &from, GlobalState &to,
             ENFORCE(substitute(from.symbols[i].name) == from.symbols[i].name);
             ENFORCE(from.symbols[i].name == to.symbols[i].name);
         }
+    }
+
+    for (auto &extension : to.semanticExtensions) {
+        extension->merge(from, to, *this);
     }
 
     to.sanityCheck();

@@ -111,7 +111,7 @@ class Opus::Types::Test::Props::DecoratorTest < Critic::Unit::UnitTest
     end
 
     it 'Validates you pass a type' do
-      assert_prop_error(/Invalid value for type constraint/, error: RuntimeError) do
+      assert_prop_error(/Invalid String literal for type constraint.*Got a String with value `goat`/, error: RuntimeError) do
         prop :foo, "goat"
       end
     end
@@ -175,13 +175,12 @@ class Opus::Types::Test::Props::DecoratorTest < Critic::Unit::UnitTest
   describe 'validating prop values' do
     it 'validates subdoc hashes have the correct values' do
 
-      assert_raises(T::Props::InvalidValueError) do
+      assert_raises(TypeError) do
         StructHash.new(the_hash: {'foo' => {}})
       end
 
       # no raise:
       StructHash.new(the_hash: {'foo' => StructHash::InnerStruct.new})
-
     end
   end
 
@@ -195,14 +194,10 @@ class Opus::Types::Test::Props::DecoratorTest < Critic::Unit::UnitTest
       foo = OptionalArrayClass.props.fetch(:foo)
       assert_equal(T::Types::TypedArray, foo.fetch(:type).class, T::Types::TypedArray)
       assert_equal(Integer, foo.fetch(:array), Integer)
-      assert(foo.fetch(:optional))
+      assert(T::Props::Utils.optional_prop?(foo))
     end
 
     it "validates setting 'optional' argument when defining with 'optional' keyword" do
-      assert_prop_error(/Use of `optional` is deprecated/, error: RuntimeError, mixin: T::Props::Serializable) do
-        optional :foo, String, optional: :migration
-      end
-
       assert_prop_error(/:optional must be one of/, mixin: T::Props::Serializable) do
         prop :foo, String, optional: :arglebargle
       end
@@ -288,10 +283,10 @@ class Opus::Types::Test::Props::DecoratorTest < Critic::Unit::UnitTest
 
     it 'does not allow setting' do
       m = ImmutablePropStruct.new(immutable: 'hello')
-      e = assert_raises(T::Props::ImmutableProp) do
+      e = assert_raises(NoMethodError) do
         m.immutable = 'world'
       end
-      assert_match(/ImmutablePropStruct#immutable/, e.message)
+      assert_match(/undefined method `immutable='/, e.message)
     end
 
     it 'const creates an immutable prop' do
@@ -335,7 +330,7 @@ class Opus::Types::Test::Props::DecoratorTest < Critic::Unit::UnitTest
     e = assert_raises do
       MatrixStruct.new.c = nil
     end
-    assert_match(/cannot be modified/, e.message)
+    assert_match(/undefined method `c='/, e.message)
     e = assert_raises do
       MatrixStruct.new.d = nil
     end
@@ -365,26 +360,35 @@ class Opus::Types::Test::Props::DecoratorTest < Critic::Unit::UnitTest
     assert_nil(MatrixStruct.new.e)
   end
 
-  it 'soft asserts if `optional` is ever specified' do
+  it 'hard asserts if `optional` is ever specified' do
     e = assert_raises do
       Class.new(T::Struct) do
-        prop :optional_true, Boolean, optional: true
+        prop :optional_true, T::Boolean, optional: true
       end
     end
     assert_match(/Use of `optional: true` is deprecated/, e.message)
 
     e = assert_raises do
       Class.new(T::Struct) do
-        prop :optional_on_load, Boolean, optional: :on_load
+        prop :optional_on_load, T::Boolean, optional: :on_load
       end
     end
     assert_match(/Use of `optional: :on_load` is deprecated/, e.message)
 
     e = assert_raises do
       Class.new(T::Struct) do
-        prop :optional_existing, Boolean, optional: :existing
+        prop :optional_existing, T::Boolean, optional: :existing
       end
     end
     assert_match(/Use of `optional: :existing` is not allowed/, e.message)
+  end
+
+  it 'raises if the word secret appears in a prop without a sensitivity annotation' do
+    e = assert_raises do
+      Class.new(T::Struct) do
+        prop :secret, String
+      end
+    end
+    assert_match(/has the word 'secret' in its name/, e.message)
   end
 end

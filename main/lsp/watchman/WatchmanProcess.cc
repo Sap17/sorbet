@@ -1,4 +1,6 @@
 #include "WatchmanProcess.h"
+#include "common/FileOps.h"
+#include "common/formatting.h"
 #include "rapidjson/document.h"
 #include "subprocess.hpp"
 
@@ -10,8 +12,8 @@ WatchmanProcess::WatchmanProcess(shared_ptr<spdlog::logger> logger, string_view 
                                  vector<string> extensions,
                                  function<void(unique_ptr<sorbet::realmain::lsp::WatchmanQueryResponse>)> processUpdate,
                                  std::function<void(int)> processExit)
-    : logger(logger), watchmanPath(string(watchmanPath)), workSpace(string(workSpace)), extensions(extensions),
-      processUpdate(processUpdate), processExit(processExit),
+    : logger(std::move(logger)), watchmanPath(string(watchmanPath)), workSpace(string(workSpace)),
+      extensions(std::move(extensions)), processUpdate(std::move(processUpdate)), processExit(std::move(processExit)),
       thread(runInAThread("watchmanReader", std::bind(&WatchmanProcess::start, this))) {}
 
 WatchmanProcess::~WatchmanProcess() {
@@ -57,12 +59,15 @@ void WatchmanProcess::start() {
 
         while (!isStopped()) {
             auto maybeLine = FileOps::readLineFromFd(fd, buffer);
-            if (!maybeLine) {
+            if (maybeLine.result == FileOps::ReadResult::Timeout) {
                 // Timeout occurred. See if we should abort before reading further.
                 continue;
+            } else if (maybeLine.result == FileOps::ReadResult::ErrorOrEof) {
+                // Exit loop; unable to read from Watchman process.
+                break;
             }
 
-            const string &line = *maybeLine;
+            const string &line = *maybeLine.output;
             // Line found!
             rapidjson::MemoryPoolAllocator<> alloc;
             rapidjson::Document d(&alloc);

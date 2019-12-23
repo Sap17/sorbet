@@ -1,5 +1,7 @@
 #include "common/common.h"
 #include "common/Exception.h"
+#include "common/FileOps.h"
+#include "common/sort.h"
 #include "os/os.h"
 #include "spdlog/sinks/stdout_color_sinks.h"
 #include <array>
@@ -33,11 +35,11 @@ bool sorbet::FileOps::exists(string_view filename) {
 string sorbet::FileOps::read(string_view filename) {
     FILE *fp = std::fopen((string(filename)).c_str(), "rb");
     if (fp) {
-        string contents;
         fseek(fp, 0, SEEK_END);
-        contents.resize(ftell(fp));
+        auto sz = ftell(fp);
+        string contents(sz, '\0');
         rewind(fp);
-        auto readBytes = fread(&contents[0], 1, contents.size(), fp);
+        auto readBytes = fread(&contents[0], 1, sz, fp);
         fclose(fp);
         if (readBytes != contents.size()) {
             // Error reading file?
@@ -58,6 +60,25 @@ void sorbet::FileOps::write(string_view filename, const vector<sorbet::u1> &data
     throw sorbet::FileNotFoundException();
 }
 
+bool sorbet::FileOps::dirExists(string_view path) {
+    struct stat buffer;
+    return stat((string(path)).c_str(), &buffer) == 0 && S_ISDIR(buffer.st_mode);
+}
+
+void sorbet::FileOps::createDir(string_view path) {
+    auto err = mkdir(string(path).c_str(), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
+    if (err) {
+        throw sorbet::CreateDirException(fmt::format("Error in createDir('{}'): {}", path, errno));
+    }
+}
+
+void sorbet::FileOps::removeFile(string_view path) {
+    auto err = remove(string(path).c_str());
+    if (err) {
+        throw sorbet::RemoveFileException(fmt::format("Error in removeFile('{}'): {}", path, errno));
+    }
+}
+
 void sorbet::FileOps::write(string_view filename, string_view text) {
     FILE *fp = std::fopen(string(filename).c_str(), "w");
     if (fp) {
@@ -66,6 +87,14 @@ void sorbet::FileOps::write(string_view filename, string_view text) {
         return;
     }
     throw sorbet::FileNotFoundException();
+}
+
+bool sorbet::FileOps::writeIfDifferent(string_view filename, string_view text) {
+    if (!exists(filename) || text != read(filename)) {
+        write(filename, text);
+        return true;
+    }
+    return false;
 }
 
 void sorbet::FileOps::append(string_view filename, string_view text) {
@@ -103,31 +132,28 @@ int sorbet::FileOps::readFd(int fd, std::vector<char> &output, int timeoutMs) {
     // ms => left over ms => converted to microseconds
     timeout.tv_usec = (timeoutMs % 1000) * 1000;
 
-    auto rv = select(fd + 1, &set, NULL, NULL, &timeout);
-    if (rv == -1) {
-        throw sorbet::FileReadException(fmt::format("Error during select(): {}", errno));
-    } else if (rv == 0) {
-        // A timeout occurred.
-        return 0;
-    } else {
-        auto read = ::read(fd, output.data(), output.size());
-        if (read == 0) {
-            throw sorbet::FileReadException("EOF");
-        } else if (read < 0) {
-            throw sorbet::FileReadException(fmt::format("Error during read(): {}", errno));
-        }
-        // `read` is size read.
-        return read;
+    auto rv = select(fd + 1, &set, nullptr, nullptr, &timeout);
+    if (rv <= 0) {
+        // A timeout (0) or error (<0) occurred
+        return rv;
     }
+
+    auto read = ::read(fd, output.data(), output.size());
+    if (read <= 0) {
+        // An error occurred.
+        return -2;
+    }
+    // `read` is size read.
+    return read;
 }
 
-optional<string> sorbet::FileOps::readLineFromFd(int fd, string &buffer, int timeoutMs) {
+sorbet::FileOps::ReadLineOutput sorbet::FileOps::readLineFromFd(int fd, string &buffer, int timeoutMs) {
     auto bufferFnd = buffer.find('\n');
     if (bufferFnd != string::npos) {
         // Edge case: Last time this was called, we read multiple lines.
         string line = buffer.substr(0, bufferFnd);
         buffer.erase(0, bufferFnd + 1);
-        return line;
+        return ReadLineOutput{ReadResult::Success, line};
     }
 
     constexpr int BUFF_SIZE = 1024 * 8;
@@ -135,8 +161,9 @@ optional<string> sorbet::FileOps::readLineFromFd(int fd, string &buffer, int tim
 
     int result = FileOps::readFd(fd, buf, timeoutMs);
     if (result == 0) {
-        // Timeout.
-        return nullopt;
+        return ReadLineOutput{ReadResult::Timeout};
+    } else if (result < 0) {
+        return ReadLineOutput{ReadResult::ErrorOrEof};
     }
 
     // Store whatever we read into buffer, and see if we received a full line.
@@ -151,18 +178,23 @@ optional<string> sorbet::FileOps::readLineFromFd(int fd, string &buffer, int tim
             // Skip over the newline.
             buffer.append(fnd + 1, end);
         }
-        return line;
+        return ReadLineOutput{ReadResult::Success, line};
     } else {
         buffer.append(buf.begin(), end);
-        return nullopt;
+        return ReadLineOutput{ReadResult::Timeout};
     }
 }
 
-// Verifies that next character after the match is '/' (indicating a folder match) or end of string (indicating a file
-// match).
-bool matchIsFolderOrFile(string_view path, string_view ignorePattern, const int pos) {
+// Verifies that a matching pattern occurs at the end of the matched path
+bool sorbet::FileOps::isFile(string_view path, string_view ignorePattern, const int pos) {
     const int endPos = pos + ignorePattern.length();
-    return endPos == path.length() || path.at(endPos) == '/';
+    return endPos == path.length();
+}
+
+// Verifies that a matching pattern is followed by a "/" in the matched path
+bool sorbet::FileOps::isFolder(string_view path, string_view ignorePattern, const int pos) {
+    const int endPos = pos + ignorePattern.length();
+    return path.at(endPos) == '/';
 }
 
 // Simple, naive implementation of regexp-free ignore rules.
@@ -173,7 +205,8 @@ bool sorbet::FileOps::isFileIgnored(string_view basePath, string_view filePath,
     // Note: relative_path always includes a leading /
     string_view relative_path = filePath.substr(basePath.length());
     for (auto &p : absoluteIgnorePatterns) {
-        if (relative_path.substr(0, p.length()) == p && matchIsFolderOrFile(relative_path, p, 0)) {
+        if (relative_path.substr(0, p.length()) == p &&
+            (isFile(relative_path, p, 0) || isFolder(relative_path, p, 0))) {
             return true;
         }
     }
@@ -184,7 +217,7 @@ bool sorbet::FileOps::isFileIgnored(string_view basePath, string_view filePath,
             pos = relative_path.find(p, pos);
             if (pos == string_view::npos) {
                 break;
-            } else if (matchIsFolderOrFile(relative_path, p, pos)) {
+            } else if (isFile(relative_path, p, pos) || isFolder(relative_path, p, pos)) {
                 return true;
             }
             pos += p.length();
@@ -233,7 +266,7 @@ void appendFilesInDir(string_view basePath, string_view path, const sorbet::Unor
     closedir(dir);
 }
 
-vector<string> sorbet::FileOps::listFilesInDir(string_view path, UnorderedSet<string> extensions, bool recursive,
+vector<string> sorbet::FileOps::listFilesInDir(string_view path, const UnorderedSet<string> &extensions, bool recursive,
                                                const std::vector<std::string> &absoluteIgnorePatterns,
                                                const std::vector<std::string> &relativeIgnorePatterns) {
     vector<string> result;

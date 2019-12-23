@@ -1,5 +1,6 @@
 #include "ast/Helpers.h"
 #include "cfg/builder/builder.h"
+#include "common/sort.h"
 #include "core/Names.h"
 
 using namespace std;
@@ -12,7 +13,7 @@ unique_ptr<CFG> CFGBuilder::buildFor(core::Context ctx, ast::MethodDef &md) {
     ENFORCE(md.symbol.exists());
     ENFORCE(!md.symbol.data(ctx)->isOverloaded());
     unique_ptr<CFG> res(new CFG); // private constructor
-    res->symbol = md.symbol.data(ctx)->dealias(ctx);
+    res->symbol = md.symbol.data(ctx)->dealiasMethod(ctx);
     if (res->symbol.data(ctx)->isAbstract()) {
         res->basicBlocks.clear();
         return res;
@@ -20,7 +21,7 @@ unique_ptr<CFG> CFGBuilder::buildFor(core::Context ctx, ast::MethodDef &md) {
     u4 temporaryCounter = 1;
     UnorderedMap<core::SymbolRef, core::LocalVariable> aliases;
     UnorderedMap<core::NameRef, core::LocalVariable> discoveredUndeclaredFields;
-    CFGContext cctx(ctx, *res.get(), core::LocalVariable(), 0, nullptr, nullptr, nullptr, aliases,
+    CFGContext cctx(ctx, *res.get(), core::LocalVariable(), 0, 0, nullptr, nullptr, nullptr, aliases,
                     discoveredUndeclaredFields, temporaryCounter);
 
     core::LocalVariable retSym = cctx.newTemporary(core::Names::returnMethodTemp());
@@ -38,10 +39,7 @@ unique_ptr<CFG> CFGBuilder::buildFor(core::Context ctx, ast::MethodDef &md) {
     for (auto &argExpr : md.args) {
         i++;
         auto *a = ast::MK::arg2Local(argExpr.get());
-        auto argSym = md.symbol.data(ctx)->arguments()[i];
-
-        synthesizeExpr(entry, a->localVariable, a->loc, make_unique<LoadArg>(argSym));
-        aliases[argSym] = a->localVariable;
+        synthesizeExpr(entry, a->localVariable, a->loc, make_unique<LoadArg>(md.symbol, i));
     }
     auto cont = walk(cctx.withTarget(retSym), md.rhs.get(), entry);
     core::LocalVariable retSym1(core::Names::finalReturn(), 0);
@@ -56,15 +54,11 @@ unique_ptr<CFG> CFGBuilder::buildFor(core::Context ctx, ast::MethodDef &md) {
     for (auto kv : aliases) {
         core::SymbolRef global = kv.first;
         core::LocalVariable local = kv.second;
-        if (global.data(ctx)->isMethodArgument()) {
-            res->minLoops[local] = 0; // method arguments are pinned only in loops
+        aliasesPrefix.emplace_back(local, global.data(ctx)->loc(), make_unique<Alias>(global));
+        if (global.data(ctx)->isField() || global.data(ctx)->isStaticField()) {
+            res->minLoops[local] = CFG::MIN_LOOP_FIELD;
         } else {
-            aliasesPrefix.emplace_back(local, global.data(ctx)->loc(), make_unique<Alias>(global));
-            if (global.data(ctx)->isField() || global.data(ctx)->isStaticField()) {
-                res->minLoops[local] = CFG::MIN_LOOP_FIELD;
-            } else {
-                res->minLoops[local] = CFG::MIN_LOOP_GLOBAL;
-            }
+            res->minLoops[local] = CFG::MIN_LOOP_GLOBAL;
         }
     }
     for (auto kv : discoveredUndeclaredFields) {
@@ -86,8 +80,8 @@ unique_ptr<CFG> CFGBuilder::buildFor(core::Context ctx, ast::MethodDef &md) {
     dealias(ctx, *res);
     CFG::ReadsAndWrites RnW = res->findAllReadsAndWrites(ctx);
     computeMinMaxLoops(ctx, RnW, *res);
-    removeDeadAssigns(ctx, RnW, *res);
     fillInBlockArguments(ctx, RnW, *res);
+    removeDeadAssigns(ctx, RnW, *res); // requires block arguments to be filled
     simplify(ctx, *res);
     histogramInc("cfgbuilder.basicBlocksSimplified", basicBlockCreated - res->basicBlocks.size());
     markLoopHeaders(ctx, *res);
@@ -133,17 +127,23 @@ CFGContext CFGContext::withTarget(core::LocalVariable target) {
     return ret;
 }
 
+CFGContext CFGContext::withRubyBlockId(int blockId) {
+    auto ret = CFGContext(*this);
+    ret.rubyBlockId = blockId;
+    return ret;
+}
+
 CFGContext CFGContext::withBlockBreakTarget(core::LocalVariable blockBreakTarget) {
     auto ret = CFGContext(*this);
     ret.blockBreakTarget = blockBreakTarget;
     return ret;
 }
 
-CFGContext CFGContext::withLoopScope(BasicBlock *nextScope, BasicBlock *breakScope, core::SymbolRef rubyBlock) {
+CFGContext CFGContext::withLoopScope(BasicBlock *nextScope, BasicBlock *breakScope, bool insideRubyBlock) {
     auto ret = CFGContext(*this);
     ret.nextScope = nextScope;
     ret.breakScope = breakScope;
-    ret.rubyBlock = rubyBlock;
+    ret.isInsideRubyBlock = insideRubyBlock;
     ret.loops += 1;
     return ret;
 }

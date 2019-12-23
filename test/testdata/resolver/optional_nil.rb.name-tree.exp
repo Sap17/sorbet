@@ -1,36 +1,76 @@
 begin
-  ::Sorbet::Private::Static.<U keep_for_ide>(::Test)
-  class ::Test<<C <U Test>>> < (::<todo sym>)
-    <U <self>>.<U sig>() do ||
-      <U <self>>.<U params>({:"x" => <emptyTree>::<C <U String>>}).<U returns>(<emptyTree>::<C <U String>>)
-    end
+  class <emptyTree><<C <root>>> < ()
+    begin
+      class ::Test<<C Test>> < (::<todo sym>)
+        <self>.extend(<emptyTree>::<C T>::<C Sig>)
 
-    def <U foo><<U foo>>(x, <blk>)
-      <U x>
-    end
+        <self>.sig() do ||
+          <self>.params({:"x" => <emptyTree>::<C String>}).returns(<emptyTree>::<C String>)
+        end
 
-    <U <self>>.<U sig>() do ||
-      <U <self>>.<U params>({:"y" => <emptyTree>::<C <U String>>}).<U returns>(<emptyTree>::<C <U String>>)
-    end
+        def foo(x, <blk>)
+          x
+        end
 
-    def <U bar><<U bar>>(y, <blk>)
-      <U y>
-    end
+        <self>.sig() do ||
+          <self>.params({:"y" => <emptyTree>::<C String>}).returns(<emptyTree>::<C String>)
+        end
 
-    <U <self>>.<U sig>() do ||
-      <U <self>>.<U params>({:"z" => <emptyTree>::<C <U String>>}).<U returns>(<emptyTree>::<C <U String>>)
-    end
+        def bar(y, <blk>)
+          y
+        end
 
-    def <U qux><<U qux>>(z, <blk>)
-      <U z>
-    end
+        <self>.sig() do ||
+          <self>.params({:"z" => <emptyTree>::<C String>}).returns(<emptyTree>::<C String>)
+        end
 
-    <U <self>>.<U sig>() do ||
-      <U <self>>.<U params>({:"w" => <emptyTree>::<C <U String>>}).<U returns>(<emptyTree>::<C <U String>>)
-    end
+        def qux(z, <blk>)
+          z
+        end
 
-    def <U baz><<U baz>>(w, <blk>)
-      <U w>
+        <self>.sig() do ||
+          <self>.params({:"w" => <emptyTree>::<C String>}).returns(<emptyTree>::<C String>)
+        end
+
+        def baz(w, <blk>)
+          w
+        end
+
+        <self>.sig() do ||
+          <self>.params({:"x" => <emptyTree>::<C String>}).returns(<emptyTree>::<C String>)
+        end
+
+        def foo<defaultArg>1(x, <blk>)
+          nil
+        end
+
+        <self>.sig() do ||
+          <self>.params({:"y" => <emptyTree>::<C String>}).returns(<emptyTree>::<C String>)
+        end
+
+        def bar<defaultArg>1(y, <blk>)
+          nil
+        end
+
+        <self>.sig() do ||
+          <self>.params({:"z" => <emptyTree>::<C String>}).returns(<emptyTree>::<C String>)
+        end
+
+        def qux<defaultArg>1(z, <blk>)
+          ""
+        end
+
+        <self>.sig() do ||
+          <self>.params({:"w" => <emptyTree>::<C String>}).returns(<emptyTree>::<C String>)
+        end
+
+        def baz<defaultArg>1(w, <blk>)
+          ""
+        end
+      end
+      ::Sorbet::Private::Static.keep_for_ide(::Test)
+      <emptyTree>
     end
   end
+  <emptyTree>
 end

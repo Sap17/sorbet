@@ -20,6 +20,7 @@ cc_library(
         "//ast/desugar",
         "//ast/treemap",
         "//core",
+        "//flattener",
     ],
 )
 
@@ -38,8 +39,9 @@ cc_test(
     deps = [
         "namer",
         "//ast/desugar",
-        "//dsl",
+        "//local_vars",
         "//parser",
+        "//rewriter",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
     ],

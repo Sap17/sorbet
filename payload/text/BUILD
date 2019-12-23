@@ -30,6 +30,7 @@ cc_library(
 cc_library(
     name = "some",
     srcs = [
+        "populate.cc",
         "text.cc",
     ],
     linkstatic = select({
@@ -37,33 +38,29 @@ cc_library(
         "//conditions:default": 1,
     }),
     visibility = ["//visibility:public"],
-    deps = ["text"],
-)
-
-cc_library(
-    name = "light",
-    srcs = [
-        "light.cc",
+    deps = [
+        "text",
+        "//common/concurrency",
+        "//common/kvstore",
+        "//main/pipeline:pipeline-orig",
     ],
-    linkstatic = select({
-        "//tools/config:linkshared": 0,
-        "//conditions:default": 1,
-    }),
-    visibility = ["//visibility:public"],
-    deps = ["text"],
 )
 
 cc_library(
     name = "empty",
     srcs = [
         "empty.cc",
+        "nopopulate.cc",
     ],
     linkstatic = select({
         "//tools/config:linkshared": 0,
         "//conditions:default": 1,
     }),
     visibility = ["//visibility:public"],
-    deps = ["text"],
+    deps = [
+        "text",
+        "//core",
+    ],
 )
 
 genrule(
@@ -73,18 +70,6 @@ genrule(
         "text.cc",
     ],
     cmd = "$(location :generate_payload) $(location text.cc) $(locations //rbi)",
-    tools = [
-        ":generate_payload",
-    ],
-)
-
-genrule(
-    name = "generate_light_payload_cc",
-    srcs = ["//rbi:light"],
-    outs = [
-        "light.cc",
-    ],
-    cmd = "$(location :generate_payload) $(location light.cc) $(locations //rbi:light)",
     tools = [
         ":generate_payload",
     ],

@@ -20,7 +20,11 @@ end
 
 class Object
   def blank?
+<<<<<<< HEAD
     !self
+=======
+    !!self
+>>>>>>> 1b7009d007f8ed838eb18a825cf15516871de77d
   end
 end
 
@@ -47,18 +51,30 @@ class A
   end
 
   def unreachable_nil()
+<<<<<<< HEAD
     if !nil.blank?
       "foo" # error: This code is unreachable
     else
       "bar"
+=======
+    a = nil
+    if !a.blank?
+      puts a # error: This code is unreachable
+>>>>>>> 1b7009d007f8ed838eb18a825cf15516871de77d
     end
   end
 
   def unreachable_false()
+<<<<<<< HEAD
     if !false.blank?
       "foo" # error: This code is unreachable
     else
       "bar"
+=======
+    a = false
+    if !a.blank?
+      puts a # error: This code is unreachable
+>>>>>>> 1b7009d007f8ed838eb18a825cf15516871de77d
     end
   end
 end

@@ -7,8 +7,18 @@ cc_library(
     ]) + ["lsp_messages_gen.cc"],
     hdrs = [
         "DefLocSaver.h",
+        "LSPConfiguration.h",
+        "LSPInput.h",
         "LSPMessage.h",
+        "LSPOutput.h",
+        "LSPPreprocessor.h",
+        "LSPTypechecker.h",
+        "LSPTypecheckerCoordinator.h",
+        "LocalVarFinder.h",
         "LocalVarSaver.h",
+        "NextMethodFinder.h",
+        "ShowOperation.h",
+        "TimeTravelingGlobalState.h",
         "json_types.h",
         "lsp.h",
         "lsp_messages_gen.h",
@@ -53,7 +63,6 @@ cc_binary(
     visibility = ["//tools:__pkg__"],
     deps = [
         "//common",
-        "//core",
         "@rapidjson",
     ],
 )
@@ -86,6 +95,8 @@ cc_test(
     visibility = ["//tools:__pkg__"],
     deps = [
         "lsp",
+        "//payload",
+        "//test/helpers",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
     ],

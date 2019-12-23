@@ -2,7 +2,10 @@
 // has to go first as it violates our poisions
 
 #include "absl/strings/match.h"
+#include "common/FileOps.h"
+#include "common/formatting.h"
 #include "configatron.h"
+#include "core/errors/namer.h"
 #include <cctype>
 #include <sys/types.h>
 #include <utility>
@@ -62,14 +65,14 @@ struct Path {
 
     Path(Path *parent, string selector) : parent(parent), selector(move(selector)){};
 
-    string toString() {
+    string toString() const {
         if (parent) {
             return parent->toString() + "." + selector;
         };
         return selector;
     }
 
-    string show(core::GlobalState &gs) {
+    string show(core::GlobalState &gs) const {
         fmt::memory_buffer buf;
         if (myType) {
             fmt::format_to(buf, "{} -> {}", toString(), myType->toString(gs));
@@ -121,8 +124,8 @@ struct Path {
                 auto method = gs.enterMethodSymbol(core::Loc::none(), classSym, gs.enterNameUTF8(child->selector));
                 child->enter(gs, method, owner);
 
-                core::SymbolRef blkArg = gs.enterMethodArgumentSymbol(core::Loc::none(), method, core::Names::blkArg());
-                blkArg.data(gs)->setBlockArgument();
+                auto &blkArg = gs.enterMethodArgumentSymbol(core::Loc::none(), method, core::Names::blkArg());
+                blkArg.flags.isBlock = true;
             }
             //            cout << classSym.toStringWithTabs(gs, 1, 1);
         }
@@ -172,7 +175,15 @@ void recurse(core::GlobalState &gs, const YAML::Node &node, shared_ptr<Path> pre
 }
 
 void handleFile(core::GlobalState &gs, const string &file, shared_ptr<Path> rootNode) {
-    YAML::Node config = YAML::LoadFile(file);
+    YAML::Node config;
+    try {
+        config = YAML::LoadFile(file);
+    } catch (YAML::ParserException &ex) {
+        if (auto e = gs.beginError(core::Loc::none(), core::errors::Namer::YAMLSyntaxError)) {
+            e.setHeader("YAML syntax error parsing file {}: {}", file, ex.msg);
+        }
+        return;
+    }
     switch (config.Type()) {
         case YAML::NodeType::Map:
             for (const auto &child : config) {
@@ -209,7 +220,7 @@ void configatron::fillInFromFileSystem(core::GlobalState &gs, const vector<strin
         gs.enterMethodSymbol(core::Loc::none(), core::Symbols::Kernel(), gs.enterNameUTF8("configatron"));
     rootNode->enter(gs, configatron, core::Symbols::root());
 
-    core::SymbolRef blkArg = gs.enterMethodArgumentSymbol(core::Loc::none(), configatron, core::Names::blkArg());
-    blkArg.data(gs)->setBlockArgument();
+    auto &blkArg = gs.enterMethodArgumentSymbol(core::Loc::none(), configatron, core::Names::blkArg());
+    blkArg.flags.isBlock = true;
 }
 } // namespace sorbet::namer

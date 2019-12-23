@@ -2,14 +2,15 @@
 #define GENERATE_LSP_MESSAGES_H
 #include "absl/strings/str_replace.h"
 #include "absl/strings/str_split.h"
+#include "common/FileOps.h"
+#include "common/JSON.h"
 #include "common/common.h"
+#include "common/formatting.h"
 
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
-
-#include "core/core.h"
 
 using namespace sorbet;
 
@@ -631,6 +632,7 @@ public:
 
 class JSONObjectType final : public JSONClassType {
 private:
+    std::vector<std::string> extraMethodDefinitions;
     std::vector<std::shared_ptr<FieldDef>> fieldDefs;
     std::vector<std::shared_ptr<FieldDef>> getRequiredFields() {
         std::vector<std::shared_ptr<FieldDef>> reqFields;
@@ -641,8 +643,9 @@ private:
     }
 
 public:
-    JSONObjectType(std::string_view typeName, std::vector<std::shared_ptr<FieldDef>> fieldDefs)
-        : JSONClassType(typeName), fieldDefs(fieldDefs) {}
+    JSONObjectType(std::string_view typeName, std::vector<std::shared_ptr<FieldDef>> fieldDefs,
+                   std::vector<std::string> extraMethodDefinitions)
+        : JSONClassType(typeName), extraMethodDefinitions(extraMethodDefinitions), fieldDefs(fieldDefs) {}
 
     BaseKind getCPPBaseKind() const {
         return BaseKind::ObjectKind;
@@ -681,7 +684,6 @@ public:
     void emitDeclaration(fmt::memory_buffer &out) {
         fmt::format_to(out, "class {} final : public JSONBaseType {{\n", typeName);
         fmt::format_to(out, "public:\n");
-        fmt::format_to(out, "static std::unique_ptr<{}> fromJSON(std::string_view json);\n", typeName);
         fmt::format_to(out,
                        "static {} fromJSONValue(const rapidjson::Value &val, std::string_view fieldName = "
                        "JSONBaseType::defaultFieldName);\n",
@@ -699,6 +701,7 @@ public:
         }
         fmt::format_to(
             out, "std::unique_ptr<rapidjson::Value> toJSONValue(rapidjson::MemoryPoolAllocator<> &alloc) const;\n");
+        fmt::format_to(out, "{}\n", fmt::join(extraMethodDefinitions.begin(), extraMethodDefinitions.end(), "\n"));
         fmt::format_to(out, "}};\n");
     }
 
@@ -718,15 +721,6 @@ public:
                            }));
             fmt::format_to(out, "}}\n");
         }
-        fmt::format_to(out, "std::unique_ptr<{0}> {0}::fromJSON(std::string_view json) {{\n", typeName);
-        fmt::format_to(out, "rapidjson::MemoryPoolAllocator<> alloc;");
-        fmt::format_to(out, "rapidjson::Document d(&alloc);\n");
-        fmt::format_to(out, "d.Parse(std::string(json));\n");
-        fmt::format_to(out, "if (!d.IsObject()) {{\n");
-        fmt::format_to(out, "throw JSONTypeError(\"document root\", \"object\", d);\n");
-        fmt::format_to(out, "}}\n");
-        fmt::format_to(out, "return fromJSONValue(d.GetObject(), \"root\");\n");
-        fmt::format_to(out, "}}\n");
         fmt::format_to(out, "{} {}::fromJSONValue(const rapidjson::Value &val, std::string_view fieldName) {{\n",
                        getCPPType(), typeName);
         fmt::format_to(out, "if (!val.IsObject()) {{\n");
@@ -984,7 +978,7 @@ public:
         }
         fmt::format_to(out, "}} else {{\n");
         fmt::format_to(out, "throw JSONTypeError(\"{}\", \"{}\", unwrappedValue);\n", fieldName,
-                       sorbet::core::JSON::escape(getJSONType()));
+                       sorbet::JSON::escape(getJSONType()));
         fmt::format_to(out, "}}\n");
         fmt::format_to(out, "}}\n");
     }

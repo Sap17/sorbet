@@ -1,30 +1,30 @@
 # frozen_string_literal: true
-# typed: true
-# rubocop:disable PrisonGuard/NoTopLevelDeclarations, PrisonGuard/PackageMatchesDirectory
+# typed: strict
 
-class Sorbet
-  # At runtime, does nothing, but statically it is treated exactly the same
-  # as T::Sig#sig. Only use it in cases where you can't use T::Sig#sig.
-  def self.sig(&blk)
-  end
-
-  # At runtime, does nothing, but statically it is treated exactly the same
-  # as T::Sig#sig. Only use it in cases where you can't use T::Sig#sig.
-  Sorbet.sig {params(blk: T.proc.bind(T::Private::Methods::SigBuilder).void).void}
-  def self.sig(&blk)
-  end
-end
-
-# Monkeypatches standard objects so that you can call `sig` anywhere.
-# Docs at http://go/types
+# Used as a mixin to any class so that you can call `sig`.
+# Docs at https://sorbet.org/docs/sigs
 module T::Sig
+  module WithoutRuntime
+    # At runtime, does nothing, but statically it is treated exactly the same
+    # as T::Sig#sig. Only use it in cases where you can't use T::Sig#sig.
+    def self.sig(arg0=nil, &blk); end # rubocop:disable PrisonGuard/BanBuiltinMethodOverride
+
+    original_verbose = $VERBOSE
+    $VERBOSE = false
+
+    # At runtime, does nothing, but statically it is treated exactly the same
+    # as T::Sig#sig. Only use it in cases where you can't use T::Sig#sig.
+    T::Sig::WithoutRuntime.sig {params(arg0: T.nilable(Symbol), blk: T.proc.bind(T::Private::Methods::DeclBuilder).void).void}
+    def self.sig(arg0=nil, &blk); end # rubocop:disable PrisonGuard/BanBuiltinMethodOverride, Lint/DuplicateMethods
+
+    $VERBOSE = original_verbose
+  end
+
   # Declares a method with type signatures and/or
   # abstract/override/... helpers. See the documentation URL on
   # {T::Helpers}
-  Sorbet.sig {params(blk: T.proc.bind(T::Private::Methods::SigBuilder).void).void}
-  def sig(&blk) # rubocop:disable PrisonGuard/BanBuiltinMethodOverride
-    T::Private::Methods.declare_sig(self, &blk)
+  T::Sig::WithoutRuntime.sig {params(arg0: T.nilable(Symbol), blk: T.proc.bind(T::Private::Methods::DeclBuilder).void).void}
+  def sig(arg0=nil, &blk) # rubocop:disable PrisonGuard/BanBuiltinMethodOverride
+    T::Private::Methods.declare_sig(self, arg0, &blk)
   end
 end
-
-# rubocop:enable PrisonGuard/NoTopLevelDeclarations, PrisonGuard/PackageMatchesDirectory

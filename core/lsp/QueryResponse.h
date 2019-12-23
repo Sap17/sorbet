@@ -10,57 +10,76 @@ class TypeConstraint;
 
 class SendResponse final {
 public:
-    SendResponse(core::DispatchResult::ComponentVec dispatchComponents,
-                 const std::shared_ptr<core::TypeConstraint> &constraint, core::Loc termLoc, core::NameRef name,
-                 core::TypeAndOrigins receiver, core::TypeAndOrigins retType);
-    core::DispatchResult::ComponentVec dispatchComponents;
-    const std::shared_ptr<core::TypeConstraint> constraint;
+    SendResponse(core::Loc termLoc, std::shared_ptr<core::DispatchResult> dispatchResult, core::NameRef callerSideName,
+                 bool isPrivateOk, core::SymbolRef enclosingMethod)
+        : dispatchResult(std::move(dispatchResult)), callerSideName(callerSideName), termLoc(termLoc),
+          isPrivateOk(isPrivateOk), enclosingMethod(enclosingMethod){};
+    const std::shared_ptr<core::DispatchResult> dispatchResult;
+    const core::NameRef callerSideName;
     const core::Loc termLoc;
-    const core::NameRef name;
-    const core::TypeAndOrigins receiver;
-    const core::TypeAndOrigins retType;
+    const bool isPrivateOk;
+    const core::SymbolRef enclosingMethod;
 };
 
 class IdentResponse final {
 public:
-    IdentResponse(core::SymbolRef owner, core::Loc termLoc, core::LocalVariable variable, core::TypeAndOrigins retType);
-    const core::SymbolRef owner;
+    IdentResponse(core::Loc termLoc, core::LocalVariable variable, core::TypeAndOrigins retType,
+                  core::SymbolRef enclosingMethod)
+        : termLoc(termLoc), variable(variable), retType(std::move(retType)), enclosingMethod(enclosingMethod){};
     const core::Loc termLoc;
     const core::LocalVariable variable;
     const core::TypeAndOrigins retType;
+    const core::SymbolRef enclosingMethod;
 };
 
 class LiteralResponse final {
 public:
-    LiteralResponse(core::SymbolRef owner, core::Loc termLoc, core::TypeAndOrigins retType);
-    const core::SymbolRef owner;
+    LiteralResponse(core::Loc termLoc, core::TypeAndOrigins retType) : termLoc(termLoc), retType(std::move(retType)){};
     const core::Loc termLoc;
     const core::TypeAndOrigins retType;
 };
 
 class ConstantResponse final {
 public:
-    ConstantResponse(core::SymbolRef owner, core::DispatchResult::ComponentVec dispatchComponents, core::Loc termLoc,
-                     core::NameRef name, core::TypeAndOrigins receiver, core::TypeAndOrigins retType);
-    const core::SymbolRef owner;
-    core::DispatchResult::ComponentVec dispatchComponents;
+    ConstantResponse(core::SymbolRef symbol, core::Loc termLoc, core::SymbolRef scope, core::NameRef name,
+                     core::TypeAndOrigins retType)
+        : symbol(symbol), termLoc(termLoc), scope(scope), name(name), retType(std::move(retType)){};
+    const core::SymbolRef symbol;
+    const core::Loc termLoc;
+    const core::SymbolRef scope;
+    const core::NameRef name;
+    const core::TypeAndOrigins retType;
+};
+
+class FieldResponse final {
+public:
+    FieldResponse(core::SymbolRef symbol, core::Loc termLoc, core::NameRef name, core::TypeAndOrigins retType)
+        : symbol(symbol), termLoc(termLoc), name(name), retType(std::move(retType)){};
+    const core::SymbolRef symbol;
     const core::Loc termLoc;
     const core::NameRef name;
-    const core::TypeAndOrigins receiver;
     const core::TypeAndOrigins retType;
 };
 
 class DefinitionResponse final {
 public:
-    DefinitionResponse(core::DispatchResult::ComponentVec dispatchComponents, core::Loc termLoc, core::NameRef name,
-                       core::TypeAndOrigins retType);
-    core::DispatchResult::ComponentVec dispatchComponents;
+    DefinitionResponse(core::SymbolRef symbol, core::Loc termLoc, core::NameRef name, core::TypeAndOrigins retType)
+        : symbol(symbol), termLoc(termLoc), name(name), retType(std::move(retType)){};
+    const core::SymbolRef symbol;
     const core::Loc termLoc;
     const core::NameRef name;
     const core::TypeAndOrigins retType;
 };
 
-typedef std::variant<SendResponse, IdentResponse, LiteralResponse, ConstantResponse, DefinitionResponse>
+class EditResponse final {
+public:
+    EditResponse(core::Loc loc, std::string replacement) : loc(loc), replacement(std::move(replacement)){};
+    const core::Loc loc;
+    const std::string replacement;
+};
+
+typedef std::variant<SendResponse, IdentResponse, LiteralResponse, ConstantResponse, FieldResponse, DefinitionResponse,
+                     EditResponse>
     QueryResponseVariant;
 
 /**
@@ -99,9 +118,19 @@ public:
     const ConstantResponse *isConstant() const;
 
     /**
+     * Returns nullptr unless this is a Field.
+     */
+    const FieldResponse *isField() const;
+
+    /**
      * Returns nullptr unless this is a Definition.
      */
     const DefinitionResponse *isDefinition() const;
+
+    /**
+     * Returns nullptr unless this is an Edit.
+     */
+    const EditResponse *isEdit() const;
 
     /**
      * Returns the source code location for the specific expression that this
@@ -115,10 +144,10 @@ public:
     core::TypePtr getRetType() const;
 
     /**
-     * Returns dispatch components associated with this response, if any.
-     * If none, returns an empty vector.
+     * Returns a reference to this response's TypeAndOrigins, if it has any.
+     * If response is of a type without TypeAndOrigins, it throws an exception.
      */
-    const core::DispatchResult::ComponentVec &getDispatchComponents() const;
+    const core::TypeAndOrigins &getTypeAndOrigins() const;
 };
 
 } // namespace sorbet::core::lsp

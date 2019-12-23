@@ -3,6 +3,8 @@
 #include "absl/types/span.h"
 #include "ast/Helpers.h"
 #include "common/Timer.h"
+#include "common/sort.h"
+#include "common/typecase.h"
 #include "core/Error.h"
 #include "core/GlobalState.h"
 #include "core/Symbols.h"
@@ -28,6 +30,7 @@ public:
     static void pickle(Pickler &p, const File &what);
     static void pickle(Pickler &p, const Name &what);
     static void pickle(Pickler &p, Type *what);
+    static void pickle(Pickler &p, const ArgInfo &a);
     static void pickle(Pickler &p, const Symbol &what);
     static void pickle(Pickler &p, FileRef file, const unique_ptr<ast::Expression> &what);
     static void pickle(Pickler &p, core::Loc loc);
@@ -37,6 +40,7 @@ public:
     static shared_ptr<File> unpickleFile(UnPickler &p);
     static Name unpickleName(UnPickler &p, GlobalState &gs);
     static TypePtr unpickleType(UnPickler &p, GlobalState *gs);
+    static ArgInfo unpickleArgInfo(UnPickler &p, GlobalState *gs);
     static Symbol unpickleSymbol(UnPickler &p, GlobalState *gs);
     static void unpickleGS(UnPickler &p, GlobalState &result);
     static Loc unpickleLoc(UnPickler &p, FileRef file);
@@ -87,7 +91,8 @@ vector<u1> Pickler::result(int compressionDegree) {
     return compressedData;
 }
 
-UnPickler::UnPickler(const u1 *const compressed) : pos(0) {
+UnPickler::UnPickler(const u1 *const compressed, spdlog::logger &tracer) : pos(0) {
+    Timer timeit(tracer, "Unpickler::UnPickler");
     int compressedSize;
     memcpy(&compressedSize, compressed, SIZE_BYTES);
     int uncompressedSize;
@@ -223,27 +228,24 @@ void SerializerImpl::pickle(Pickler &p, const File &what) {
     p.putU1((u1)what.sourceType);
     p.putStr(what.path());
     p.putStr(what.source());
-    p.putU4(what.globalStateHash.load());
 }
 
 shared_ptr<File> SerializerImpl::unpickleFile(UnPickler &p) {
     auto t = (File::Type)p.getU1();
     auto path = string(p.getStr());
     auto source = string(p.getStr());
-    auto hash = p.getU4();
     auto ret = make_shared<File>(std::move(path), std::move(source), t);
-    ret->setDefinitionHash(hash);
     return ret;
 }
 
 void SerializerImpl::pickle(Pickler &p, const Name &what) {
-    p.putU1(what.kind);
+    p.putU1(static_cast<u1>(what.kind));
     switch (what.kind) {
         case NameKind::UTF8:
             p.putStr(what.raw.utf8);
             break;
         case NameKind::UNIQUE:
-            p.putU1(what.unique.uniqueNameKind);
+            p.putU1(static_cast<u1>(what.unique.uniqueNameKind));
             p.putU4(what.unique.original._id);
             p.putU4(what.unique.num);
             break;
@@ -316,6 +318,8 @@ void SerializerImpl::pickle(Pickler &p, Type *what) {
         p.putU4(alias->symbol._id);
     } else if (auto *lp = cast_type<LambdaParam>(what)) {
         p.putU4(8);
+        pickle(p, lp->lowerBound.get());
+        pickle(p, lp->upperBound.get());
         p.putU4(lp->definition._id);
     } else if (auto *at = cast_type<AppliedType>(what)) {
         p.putU4(9);
@@ -394,7 +398,9 @@ TypePtr SerializerImpl::unpickleType(UnPickler &p, GlobalState *gs) {
         case 7:
             return make_type<AliasType>(SymbolRef(gs, p.getU4()));
         case 8: {
-            return make_type<LambdaParam>(SymbolRef(gs, p.getU4()));
+            auto lower = unpickleType(p, gs);
+            auto upper = unpickleType(p, gs);
+            return make_type<LambdaParam>(SymbolRef(gs, p.getU4()), lower, upper);
         }
         case 9: {
             SymbolRef klass(gs, p.getU4());
@@ -413,8 +419,35 @@ TypePtr SerializerImpl::unpickleType(UnPickler &p, GlobalState *gs) {
             return make_type<SelfType>();
         }
         default:
-            Exception::raise("Uknown type tag {}", tag);
+            Exception::raise("Unknown type tag {}", tag);
     }
+}
+
+void SerializerImpl::pickle(Pickler &p, const ArgInfo &a) {
+    p.putU4(a.name._id);
+    p.putU4(a.rebind._id);
+    pickle(p, a.loc);
+    p.putU1(a.flags.toU1());
+    pickle(p, a.type.get());
+}
+
+ArgInfo SerializerImpl::unpickleArgInfo(UnPickler &p, GlobalState *gs) {
+    ArgInfo result;
+    result.name = core::NameRef(*gs, p.getU4());
+    result.rebind = core::SymbolRef(gs, p.getU4());
+    {
+        core::Loc loc;
+        auto low = p.getU4();
+        auto high = p.getU4();
+        loc.setFrom2u4(low, high);
+        result.loc = loc;
+    }
+    {
+        u1 flags = p.getU1();
+        result.flags.setFromU1(flags);
+    }
+    result.type = unpickleType(p, gs);
+    return result;
 }
 
 void SerializerImpl::pickle(Pickler &p, const Symbol &what) {
@@ -423,18 +456,33 @@ void SerializerImpl::pickle(Pickler &p, const Symbol &what) {
     p.putU4(what.superClassOrRebind._id);
     p.putU4(what.flags);
     p.putU4(what.uniqueCounter);
-    p.putU4(what.argumentsOrMixins.size());
-    for (SymbolRef s : what.argumentsOrMixins) {
-        p.putU4(s._id);
+    if (!what.isMethod()) {
+        p.putU4(what.mixins_.size());
+        for (SymbolRef s : what.mixins_) {
+            p.putU4(s._id);
+        }
     }
     p.putU4(what.typeParams.size());
     for (SymbolRef s : what.typeParams) {
         p.putU4(s._id);
     }
-    p.putU4(what.members.size());
-    for (const auto &member : what.members) {
-        p.putU4(member.first.id());
-        p.putU4(member.second._id);
+    if (what.isMethod()) {
+        p.putU4(what.arguments().size());
+        for (const auto &a : what.arguments()) {
+            pickle(p, a);
+        }
+    }
+    p.putU4(what.members().size());
+    vector<pair<u4, u4>> membersSorted;
+
+    for (const auto &member : what.members()) {
+        membersSorted.emplace_back(member.first.id(), member.second._id);
+    }
+    fast_sort(membersSorted, [](auto const &lhs, auto const &rhs) -> bool { return lhs.first < rhs.first; });
+
+    for (const auto &member : membersSorted) {
+        p.putU4(member.first);
+        p.putU4(member.second);
     }
 
     pickle(p, what.resultType.get());
@@ -451,10 +499,12 @@ Symbol SerializerImpl::unpickleSymbol(UnPickler &p, GlobalState *gs) {
     result.superClassOrRebind = SymbolRef(gs, p.getU4());
     result.flags = p.getU4();
     result.uniqueCounter = p.getU4();
-    int argumentsOrMixinsSize = p.getU4();
-    result.argumentsOrMixins.reserve(argumentsOrMixinsSize);
-    for (int i = 0; i < argumentsOrMixinsSize; i++) {
-        result.argumentsOrMixins.emplace_back(SymbolRef(gs, p.getU4()));
+    if (!result.isMethod()) {
+        int mixinsSize = p.getU4();
+        result.mixins_.reserve(mixinsSize);
+        for (int i = 0; i < mixinsSize; i++) {
+            result.mixins_.emplace_back(SymbolRef(gs, p.getU4()));
+        }
     }
     int typeParamsSize = p.getU4();
 
@@ -463,8 +513,14 @@ Symbol SerializerImpl::unpickleSymbol(UnPickler &p, GlobalState *gs) {
         result.typeParams.emplace_back(SymbolRef(gs, p.getU4()));
     }
 
+    if (result.isMethod()) {
+        int argsSize = p.getU4();
+        for (int i = 0; i < argsSize; i++) {
+            result.arguments().emplace_back(unpickleArgInfo(p, gs));
+        }
+    }
     int membersSize = p.getU4();
-    result.members.reserve(membersSize);
+    result.members().reserve(membersSize);
     for (int i = 0; i < membersSize; i++) {
         auto name = NameRef(*gs, p.getU4());
         auto sym = SymbolRef(gs, p.getU4());
@@ -472,7 +528,7 @@ Symbol SerializerImpl::unpickleSymbol(UnPickler &p, GlobalState *gs) {
             ENFORCE(name.exists());
             ENFORCE(sym.exists());
         }
-        result.members[name] = sym;
+        result.members()[name] = sym;
     }
     result.resultType = unpickleType(p, gs);
     auto locCount = p.getU4();
@@ -541,6 +597,8 @@ int nearestPowerOf2(int from) {
 }
 
 void SerializerImpl::unpickleGS(UnPickler &p, GlobalState &result) {
+    Timer timeit(result.tracer(), "unpickleGS");
+    result.creation = timeit.getFlowEdge();
     if (p.getU4() != Serializer::VERSION) {
         Exception::raise("Payload version mismatch");
     }
@@ -553,56 +611,61 @@ void SerializerImpl::unpickleGS(UnPickler &p, GlobalState &result) {
     symbols.clear();
     vector<pair<unsigned int, unsigned int>> namesByHash(std::move(result.namesByHash));
     namesByHash.clear();
+    {
+        Timer timeit(result.tracer(), "readFiles");
 
-    result.trace("Reading files");
-
-    int filesSize = p.getU4();
-    files.reserve(filesSize);
-    for (int i = 0; i < filesSize; i++) {
-        if (i == 0) {
-            files.emplace_back();
-        } else {
-            files.emplace_back(unpickleFile(p));
+        int filesSize = p.getU4();
+        files.reserve(filesSize);
+        for (int i = 0; i < filesSize; i++) {
+            if (i == 0) {
+                files.emplace_back();
+            } else {
+                files.emplace_back(unpickleFile(p));
+            }
         }
     }
 
-    result.trace("Reading names");
+    {
+        Timer timeit(result.tracer(), "readNames");
 
-    int namesSize = p.getU4();
-    ENFORCE(namesSize > 0);
-    names.reserve(nearestPowerOf2(namesSize));
-    for (int i = 0; i < namesSize; i++) {
-        if (i == 0) {
-            auto &inserted = names.emplace_back();
-            inserted.kind = NameKind::UTF8;
-            inserted.raw.utf8 = string_view();
-        } else {
-            names.emplace_back(unpickleName(p, result));
+        int namesSize = p.getU4();
+        ENFORCE(namesSize > 0);
+        names.reserve(nearestPowerOf2(namesSize));
+        for (int i = 0; i < namesSize; i++) {
+            if (i == 0) {
+                auto &inserted = names.emplace_back();
+                inserted.kind = NameKind::UTF8;
+                inserted.raw.utf8 = string_view();
+            } else {
+                names.emplace_back(unpickleName(p, result));
+            }
         }
     }
 
-    result.trace("Reading symbols");
+    {
+        Timer timeit(result.tracer(), "readSymbols");
 
-    int symbolSize = p.getU4();
-    ENFORCE(symbolSize > 0);
-    symbols.reserve(symbolSize);
-    for (int i = 0; i < symbolSize; i++) {
-        symbols.emplace_back(unpickleSymbol(p, &result));
+        int symbolSize = p.getU4();
+        ENFORCE(symbolSize > 0);
+        symbols.reserve(symbolSize);
+        for (int i = 0; i < symbolSize; i++) {
+            symbols.emplace_back(unpickleSymbol(p, &result));
+        }
     }
 
-    result.trace("Reading name table");
-
-    int namesByHashSize = p.getU4();
-    names.reserve(namesByHashSize / 2);
-    namesByHash.reserve(names.capacity() * 2);
-    for (int i = 0; i < namesByHashSize; i++) {
-        auto hash = p.getU4();
-        auto value = p.getU4();
-        namesByHash.emplace_back(make_pair(hash, value));
+    {
+        Timer timeit(result.tracer(), "readNameTable");
+        int namesByHashSize = p.getU4();
+        names.reserve(namesByHashSize / 2);
+        namesByHash.reserve(names.capacity() * 2);
+        for (int i = 0; i < namesByHashSize; i++) {
+            auto hash = p.getU4();
+            auto value = p.getU4();
+            namesByHash.emplace_back(make_pair(hash, value));
+        }
     }
 
     UnorderedMap<string, FileRef> fileRefByPath;
-    result.trace("moving");
     int i = 0;
     for (auto f : files) {
         if (f && !f->path().empty()) {
@@ -610,11 +673,15 @@ void SerializerImpl::unpickleGS(UnPickler &p, GlobalState &result) {
         }
         i++;
     }
-    result.fileRefByPath = std::move(fileRefByPath);
-    result.files = std::move(files);
-    result.names = std::move(names);
-    result.symbols = std::move(symbols);
-    result.namesByHash = std::move(namesByHash);
+
+    {
+        Timer timeit(result.tracer(), "moving");
+        result.fileRefByPath = std::move(fileRefByPath);
+        result.files = std::move(files);
+        result.names = std::move(names);
+        result.symbols = std::move(symbols);
+        result.namesByHash = std::move(namesByHash);
+    }
     result.sanityCheck();
 }
 
@@ -646,11 +713,9 @@ vector<u1> Serializer::storePayloadAndNameTable(GlobalState &gs) {
 
 void Serializer::loadGlobalState(GlobalState &gs, const u1 *const data) {
     ENFORCE(gs.files.empty() && gs.names.empty() && gs.symbols.empty(), "Can't load into a non-empty state");
-    UnPickler p(data);
-    gs.trace("Decompression done");
+    UnPickler p(data, gs.tracer());
     SerializerImpl::unpickleGS(p, gs);
     gs.installIntrinsics();
-    gs.trace("Done reading GS");
 }
 
 template <class T> void SerializerImpl::pickleTree(Pickler &p, FileRef file, unique_ptr<T> &t) {
@@ -689,7 +754,6 @@ void SerializerImpl::pickle(Pickler &p, FileRef file, const unique_ptr<ast::Expr
         },
         [&](ast::Block *a) {
             pickleAstHeader(p, 3, a);
-            p.putU4(a->symbol._id);
             p.putU4(a->args.size());
             pickle(p, file, a->body);
             for (auto &arg : a->args) {
@@ -720,10 +784,6 @@ void SerializerImpl::pickle(Pickler &p, FileRef file, const unique_ptr<ast::Expr
             pickleAstHeader(p, 8, a);
             p.putU4(a->cnst._id);
             pickle(p, file, a->scope);
-        },
-        [&](ast::Field *a) {
-            pickleAstHeader(p, 9, a);
-            p.putU4(a->symbol._id);
         },
         [&](ast::Local *a) {
             pickleAstHeader(p, 10, a);
@@ -895,14 +955,13 @@ unique_ptr<ast::Expression> SerializerImpl::unpickleExpr(serialize::UnPickler &p
             return ast::MK::Send(loc, std::move(recv), fun, std::move(store), flags, std::move(blk));
         }
         case 3: {
-            SymbolRef sym(gs, p.getU4());
             auto argsSize = p.getU4();
             auto body = unpickleExpr(p, gs, file);
             ast::MethodDef::ARGS_store args(argsSize);
             for (auto &arg : args) {
                 arg = unpickleExpr(p, gs, file);
             }
-            return ast::MK::Block(loc, std::move(body), std::move(args), sym);
+            return ast::MK::Block(loc, std::move(body), std::move(args));
         }
         case 4: {
             auto tpe = unpickleType(p, &gs);
@@ -927,10 +986,6 @@ unique_ptr<ast::Expression> SerializerImpl::unpickleExpr(serialize::UnPickler &p
             NameRef cnst = unpickleNameRef(p, gs);
             auto scope = unpickleExpr(p, gs, file);
             return ast::MK::UnresolvedConstant(loc, std::move(scope), cnst);
-        }
-        case 9: {
-            SymbolRef sym(gs, p.getU4());
-            return make_unique<ast::Field>(loc, sym);
         }
         case 10: {
             NameRef nm = unpickleNameRef(p, gs);
@@ -1081,7 +1136,7 @@ unique_ptr<ast::Expression> SerializerImpl::unpickleExpr(serialize::UnPickler &p
             auto tmp = unpickleExpr(p, gs, file);
             unique_ptr<ast::Reference> ref(static_cast<ast::Reference *>(tmp.release()));
             auto default_ = unpickleExpr(p, gs, file);
-            return make_unique<ast::OptionalArg>(loc, std::move(ref), std::move(default_));
+            return ast::MK::OptionalArg(loc, std::move(ref), std::move(default_));
         }
         case 30: {
             return make_unique<ast::ZSuperArgs>(loc);
@@ -1102,7 +1157,7 @@ unique_ptr<ast::Expression> SerializerImpl::unpickleExpr(serialize::UnPickler &p
 }
 
 unique_ptr<ast::Expression> Serializer::loadExpression(GlobalState &gs, const u1 *const p, u4 forceId) {
-    serialize::UnPickler up(p);
+    serialize::UnPickler up(p, gs.tracer());
     u4 loaded = up.getU4();
     FileRef fileId(forceId > 0 ? forceId : loaded);
     return SerializerImpl::unpickleExpr(up, gs, fileId);

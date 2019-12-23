@@ -1,0 +1,88 @@
+class <emptyTree><<C <root>>> < ()
+  class <emptyTree>::<C HasMeth><<C <todo sym>>> < (::<todo sym>)
+    def meth<<C <todo sym>>>(&<blk>)
+      "meth"
+    end
+  end
+
+  def returns_lambda<<C <todo sym>>>(&<blk>)
+    <self>.lambda() do |x|
+      "returns_lambda"
+    end
+  end
+
+  class <emptyTree>::<C HasToProc><<C <todo sym>>> < (::<todo sym>)
+    def to_proc<<C <todo sym>>>(&<blk>)
+      <self>.returns_lambda()
+    end
+  end
+
+  def calls_arg_with_object<<C <todo sym>>>(arg, &blk)
+    blk.call(arg)
+  end
+
+  def calls_with_object<<C <todo sym>>>(&blk)
+    ::<Magic>.<call-with-block>(<self>, :"calls_arg_with_object", blk, <emptyTree>::<C HasMeth>.new())
+  end
+
+  class <emptyTree>::<C CallsWithObject><<C <todo sym>>> < (::<todo sym>)
+    def self.calls_with_object<<C <todo sym>>>(&blk)
+      blk.call(<emptyTree>::<C HasMeth>.new())
+    end
+  end
+
+  class <emptyTree>::<C CallsWithObjectChild><<C <todo sym>>> < (<emptyTree>::<C CallsWithObject>)
+    def self.calls_with_object<<C <todo sym>>>(&blk)
+      ::<Magic>.<call-with-block>(<self>, :"super", blk)
+    end
+  end
+
+  def foo<<C <todo sym>>>(&blk)
+    begin
+      <self>.calls_with_object() do |<block-pass>$2|
+        <block-pass>$2.meth()
+      end
+      <self>.calls_with_object() do |*args|
+        ::<Magic>.<call-with-splat>(:"meth".to_proc(), :"call", args.to_a())
+      end
+      <self>.calls_with_object() do |x|
+        :"meth".to_proc().call(x)
+      end
+      <self>.calls_with_object() do |x|
+        x.meth()
+      end
+      ::<Magic>.<call-with-block>(<self>, :"calls_with_object", blk)
+      ::<Magic>.<call-with-block>(<self>, :"calls_with_object", <self>.returns_lambda())
+      ::<Magic>.<call-with-block>(<self>, :"calls_with_object", <emptyTree>::<C HasToProc>.new())
+      <self>.calls_with_object() do |*args|
+        ::<Magic>.<call-with-splat>(<emptyTree>::<C HasToProc>.new().to_proc(), :"call", args.to_a())
+      end
+      <emptyTree>::<C CallsWithObject>.calls_with_object() do |<block-pass>$3|
+        <block-pass>$3.meth()
+      end
+      begin
+        <assignTemp>$4 = <emptyTree>::<C CallsWithObject>
+        if <assignTemp>$4.==(nil)
+          nil
+        else
+          <assignTemp>$4.calls_with_object() do |<block-pass>$5|
+            <block-pass>$5.meth()
+          end
+        end
+      end
+      <emptyTree>::<C CallsWithObjectChild>.calls_with_object() do |<block-pass>$6|
+        <block-pass>$6.meth()
+      end
+      <self>.calls_arg_with_object(<emptyTree>::<C HasMeth>.new()) do |<block-pass>$7|
+        <block-pass>$7.meth()
+      end
+      <self>.calls_arg_with_object(<emptyTree>::<C HasMeth>.new()) do |x|
+        x.meth()
+      end
+    end
+  end
+
+  <self>.foo() do |x|
+    "foo"
+  end
+end

@@ -10,15 +10,15 @@
 class T::Props::Decorator
   extend T::Sig
 
-  Rules = T.type_alias(T::Hash[Symbol, T.untyped])
-  DecoratedClass = T.type_alias(T.untyped) # T.class_of(T::Props), but that produces circular reference errors in some circumstances
-  DecoratedInstance = T.type_alias(T.untyped) # Would be T::Props, but that produces circular reference errors in some circumstances
-  PropType = T.type_alias(T.any(T::Types::Base, T::Props::CustomType))
-  PropTypeOrClass = T.type_alias(T.any(PropType, Module))
+  Rules = T.type_alias {T::Hash[Symbol, T.untyped]}
+  DecoratedClass = T.type_alias {T.untyped} # T.class_of(T::Props), but that produces circular reference errors in some circumstances
+  DecoratedInstance = T.type_alias {T.untyped} # Would be T::Props, but that produces circular reference errors in some circumstances
+  PropType = T.type_alias {T.any(T::Types::Base, T::Props::CustomType)}
+  PropTypeOrClass = T.type_alias {T.any(PropType, Module)}
 
   class NoRulesError < StandardError; end
 
-  sig {params(klass: DecoratedClass).void}
+  T::Sig::WithoutRuntime.sig {params(klass: DecoratedClass).void}
   def initialize(klass)
     @class = klass
     klass.plugins.each do |mod|
@@ -76,6 +76,7 @@ class T::Props::Decorator
       clobber_existing_method!
       extra
       optional
+      _tnilable
     }
   end
 
@@ -130,11 +131,52 @@ class T::Props::Decorator
   # Passing in rules here is purely a performance optimization.
   sig {params(prop: Symbol, val: T.untyped, rules: Rules).void.checked(:never)}
   private def check_prop_type(prop, val, rules=prop_rules(prop))
-    type = rules.fetch(:type_object)
-    unless type.valid?(val)
-      raise T::Props::InvalidValueError.new("Can't set #{@class.name}.#{prop} to #{val.inspect} " \
+    type_object = rules.fetch(:type_object)
+    type = rules.fetch(:type)
+
+    # TODO: ideally we'd add `&& rules[:optional] != :existing` to this check
+    # (it makes sense to treat those props required in this context), but we'd need
+    # to be sure that doesn't break any existing code first.
+    if val.nil?
+      if !T::Props::Utils.need_nil_write_check?(rules) || (rules.key?(:default) && rules[:default].nil?)
+        return
+      end
+
+      if rules[:raise_on_nil_write]
+        raise T::Props::InvalidValueError.new("Can't set #{@class.name}.#{prop} to #{val.inspect} " \
         "(instance of #{val.class}) - need a #{type}")
+      end
     end
+
+    # T::Props::CustomType is not a real object based class so that we can not run real type check call.
+    # T::Props::CustomType.valid?() is only a helper function call.
+    valid =
+      if type.is_a?(T::Props::CustomType) && T::Props::Utils.optional_prop?(rules)
+        type.valid?(val)
+      else
+        type_object.valid?(val)
+      end
+
+    if !valid
+      raise T::Props::InvalidValueError.new("Can't set #{@class.name}.#{prop} to #{val.inspect} " \
+        "(instance of #{val.class}) - need a #{type_object}")
+    end
+  rescue T::Props::InvalidValueError => err
+    caller_loc = T.must(caller_locations(8, 1))[0]
+
+    pretty_message = "Parameter '#{prop}': #{err.message}\n" \
+      "Caller: #{caller_loc.path}:#{caller_loc.lineno}\n"
+
+    T::Configuration.call_validation_error_handler(
+      nil,
+      message: err.message,
+      pretty_message: pretty_message,
+      kind: 'Parameter',
+      name: prop,
+      type: type,
+      value: val,
+      location: caller_loc,
+    )
   end
 
   # For performance, don't use named params here.
@@ -225,7 +267,7 @@ class T::Props::Decorator
         "to 'sensitivity:' (in prop #{@class.name}.#{name})")
     end
 
-    unless rules.keys.all? {|k| valid_props.include?(k)}
+    if !(rules.keys - valid_props).empty?
       raise ArgumentError.new("At least one invalid prop arg supplied in #{self}: #{rules.keys.inspect}")
     end
 
@@ -305,25 +347,30 @@ class T::Props::Decorator
     .void
   end
   def prop_defined(name, cls, rules={})
-    # TODO(jerry): Create similar soft assertions against false
+    cls = T::Utils.resolve_alias(cls)
     if rules[:optional] == true
-      optional_setter = rules.delete(:optional_setter)
-      if optional_setter != :t_nilable
-        Opus::Error.soft(
-          'Use of `optional: true` is deprecated, please use `T.nilable(...)` instead.',
-          notify: 'wei',
-          storytime: {
-            name: name,
-            cls_or_args: cls.to_s,
-            args: rules,
-            klass: decorated_class.name,
-          },
-        )
-      end
+      T::Configuration.hard_assert_handler(
+        'Use of `optional: true` is deprecated, please use `T.nilable(...)` instead.',
+        storytime: {
+          name: name,
+          cls_or_args: cls.to_s,
+          args: rules,
+          klass: decorated_class.name,
+        },
+      )
+    elsif rules[:optional] == false
+      T::Configuration.hard_assert_handler(
+        'Use of `optional: :false` is deprecated as it\'s the default value.',
+        storytime: {
+          name: name,
+          cls_or_args: cls.to_s,
+          args: rules,
+          klass: decorated_class.name,
+        },
+      )
     elsif rules[:optional] == :on_load
-      Opus::Error.soft(
+      T::Configuration.hard_assert_handler(
         'Use of `optional: :on_load` is deprecated. You probably want `T.nilable(...)` with :raise_on_nil_write instead.',
-        notify: 'jerry',
         storytime: {
           name: name,
           cls_or_args: cls.to_s,
@@ -332,9 +379,8 @@ class T::Props::Decorator
         },
       )
     elsif rules[:optional] == :existing
-      Opus::Error.soft(
+      T::Configuration.hard_assert_handler(
         'Use of `optional: :existing` is not allowed: you should use use T.nilable (http://go/optional)',
-        notify: 'wei',
         storytime: {
           name: name,
           cls_or_args: cls.to_s,
@@ -344,16 +390,12 @@ class T::Props::Decorator
       )
     end
 
-    # Finally, if `optional` was not specified, then we set it to its default
-    # value of `false`.
-    if rules[:optional].nil?
-      if is_nilable?(cls)
-        rules[:optional] = true
-      elsif rules[:ifunset].nil?
-        # TODO(jerry): Once we get rid of :ifunset, we can unconditionally make
-        # the default to be `optional: false`
-        rules[:optional] = false
-      end
+    if T::Utils::Nilable.is_union_with_nilclass(cls)
+      # :_tnilable is introduced internally for performance purpose so that clients do not need to call
+      # T::Utils::Nilable.is_tnilable(cls) again.
+      # It is strictly internal: clients should always use T::Props::Utils.required_prop?() or
+      # T::Props::Utils.optional_prop?() for checking whether a field is required or optional.
+      rules[:_tnilable] = true
     end
 
     name = name.to_sym
@@ -368,8 +410,13 @@ class T::Props::Decorator
 
     prop_validate_definition!(name, cls, rules, type_object)
 
-    array_subdoc_type = array_subdoc_type(type_object)
-    hash_value_subdoc_type = hash_value_subdoc_type(type_object)
+    # Retrive the possible underlying object with T.nilable.
+    underlying_type_object = T::Utils::Nilable.get_underlying_type_object(type_object)
+    type = T::Utils::Nilable.get_underlying_type(type)
+
+    array_subdoc_type = array_subdoc_type(underlying_type_object)
+    hash_value_subdoc_type = hash_value_subdoc_type(underlying_type_object)
+    hash_key_custom_type = hash_key_custom_type(underlying_type_object)
 
     sensitivity_and_pii = {sensitivity: rules[:sensitivity]}
     if defined?(Opus) && defined?(Opus::Sensitivity) && defined?(Opus::Sensitivity::Utils)
@@ -380,16 +427,17 @@ class T::Props::Decorator
     # specify their PII nature, as long as every class into which they
     # are ultimately included does.
     #
-    # TODO This is broken because `contains_pii?` is only defined on Opus::Sensitivity::PIIable
-    if sensitivity_and_pii[:pii] && @class.is_a?(Class) && !@class.contains_pii?
-      raise ArgumentError.new(
-        'Cannot include a pii prop in a class that declares `contains_no_pii`'
-      )
+    if defined?(Opus) && defined?(Opus::Sensitivity) && defined?(Opus::Sensitivity::PIIable)
+      if sensitivity_and_pii[:pii] && @class.is_a?(Class) && !@class.contains_pii?
+        raise ArgumentError.new(
+          'Cannot include a pii prop in a class that declares `contains_no_pii`'
+        )
+      end
     end
 
     needs_clone =
       if cls <= Array || cls <= Hash || cls <= Set
-        shallow_clone_ok(type_object) ? :shallow : true
+        shallow_clone_ok(underlying_type_object) ? :shallow : true
       else
         false
       end
@@ -403,8 +451,9 @@ class T::Props::Decorator
       # and can/should be moved accordingly.
       type_is_custom_type: cls.singleton_class < T::Props::CustomType,
       type_is_serializable: cls < T::Props::Serializable,
-      type_is_array_of_serializable: !!array_subdoc_type,
-      type_is_hash_of_serializable: !!hash_value_subdoc_type,
+      type_is_array_of_serializable: !array_subdoc_type.nil?,
+      type_is_hash_of_serializable_values: !hash_value_subdoc_type.nil?,
+      type_is_hash_of_custom_type_keys: !hash_key_custom_type.nil?,
       type_object: type_object,
       type_needs_clone: needs_clone,
       accessor_key: "@#{name}".to_sym,
@@ -427,8 +476,15 @@ class T::Props::Decorator
       rules[:serializable_subtype] = cls
     elsif array_subdoc_type
       rules[:serializable_subtype] = array_subdoc_type
+    elsif hash_value_subdoc_type && hash_key_custom_type
+      rules[:serializable_subtype] = {
+        keys: hash_key_custom_type,
+        values: hash_value_subdoc_type,
+      }
     elsif hash_value_subdoc_type
       rules[:serializable_subtype] = hash_value_subdoc_type
+    elsif hash_key_custom_type
+      rules[:serializable_subtype] = hash_key_custom_type
     end
 
     add_prop_definition(name, rules)
@@ -447,18 +503,16 @@ class T::Props::Decorator
 
   sig {params(name: Symbol, rules: Rules).void}
   private def define_getter_and_setter(name, rules)
-    if rules[:immutable]
-      @class.send(:define_method, "#{name}=") do |_x|
-        raise T::Props::ImmutableProp.new("#{self.class}##{name} cannot be modified after creation.")
+    T::Configuration.without_ruby_warnings do
+      if !rules[:immutable]
+        @class.send(:define_method, "#{name}=") do |x|
+          self.class.decorator.prop_set(self, name, x, rules)
+        end
       end
-    else
-      @class.send(:define_method, "#{name}=") do |x|
-        self.class.decorator.prop_set(self, name, x, rules)
-      end
-    end
 
-    @class.send(:define_method, name) do
-      self.class.decorator.prop_get(self, name, rules)
+      @class.send(:define_method, name) do
+        self.class.decorator.prop_get(self, name, rules)
+      end
     end
   end
 
@@ -468,33 +522,57 @@ class T::Props::Decorator
     .returns(T.nilable(Module))
   end
   private def array_subdoc_type(type)
-    if type.is_a?(T::Types::TypedArray) && type.type.is_a?(T::Types::Simple) && type.type.raw_type < T::Props::Serializable
-      type.type.raw_type
-    else
-      nil
+    if type.is_a?(T::Types::TypedArray)
+      el_type = T::Utils.unwrap_nilable(type.type) || type.type
+
+      if el_type.is_a?(T::Types::Simple) &&
+          (el_type.raw_type < T::Props::Serializable || el_type.raw_type.is_a?(T::Props::CustomType))
+        return el_type.raw_type
+      end
     end
+
+    nil
   end
 
-  # returns the subdoc of the hash key tupe, or nil if it's not a Document type
+  # returns the subdoc of the hash value type, or nil if it's not a Document type
   sig do
     params(type: PropType)
     .returns(T.nilable(Module))
   end
   private def hash_value_subdoc_type(type)
-    if type.is_a?(T::Types::TypedHash) && type.values.is_a?(T::Types::Simple) && type.values.raw_type < T::Props::Serializable
-      type.values.raw_type
-    else
-      nil
+    if type.is_a?(T::Types::TypedHash)
+      values_type = T::Utils.unwrap_nilable(type.values) || type.values
+
+      if values_type.is_a?(T::Types::Simple) &&
+          (values_type.raw_type < T::Props::Serializable || values_type.raw_type.is_a?(T::Props::CustomType))
+        return values_type.raw_type
+      end
     end
+
+    nil
+  end
+
+  # returns the type of the hash key, or nil. Any CustomType could be a key, but we only expect T::Enum right now.
+  sig do
+    params(type: PropType)
+    .returns(T.nilable(Module))
+  end
+  private def hash_key_custom_type(type)
+    if type.is_a?(T::Types::TypedHash)
+      keys_type = T::Utils.unwrap_nilable(type.keys) || type.keys
+
+      if keys_type.is_a?(T::Types::Simple) && keys_type.raw_type.is_a?(T::Props::CustomType)
+        return keys_type.raw_type
+      end
+    end
+
+    nil
   end
 
   # From T::Props::Utils.deep_clone_object, plus String
   TYPES_NOT_NEEDING_CLONE = [TrueClass, FalseClass, NilClass, Symbol, String, Numeric]
-  if defined?(Opus) && defined?(Opus::Enum)
-    TYPES_NOT_NEEDING_CLONE << Opus::Enum
-  end
 
-  sig {params(type: PropType).returns(Boolean)}
+  sig {params(type: PropType).returns(T::Boolean)}
   private def shallow_clone_ok(type)
     inner_type =
       if type.is_a?(T::Types::TypedArray)
@@ -525,7 +603,11 @@ class T::Props::Decorator
         T::Array[array]
       end
     elsif !enum.nil?
-      T.enum(enum)
+      if T::Utils.unwrap_nilable(type)
+        T.nilable(T.enum(enum))
+      else
+        T.enum(enum)
+      end
     else
       T::Utils.coerce(type)
     end
@@ -535,22 +617,26 @@ class T::Props::Decorator
   private def validate_not_missing_sensitivity(prop_name, rules)
     if rules[:sensitivity].nil?
       if rules[:redaction]
-        Opus::Error.hard("#{@class}##{prop_name} has a 'redaction:' annotation but no " \
+        T::Configuration.hard_assert_handler(
+          "#{@class}##{prop_name} has a 'redaction:' annotation but no " \
           "'sensitivity:' annotation. This is probably wrong, because if a " \
           "prop needs redaction then it is probably sensitive. Add a " \
           "sensitivity annotation like 'sensitivity: Opus::Sensitivity::PII." \
-          "whatever', or explicitly override this check with 'sensitivity: []'.")
+          "whatever', or explicitly override this check with 'sensitivity: []'."
+        )
       end
       # TODO(PRIVACYENG-982) Ideally we'd also check for 'password' and possibly
       # other terms, but this interacts badly with ProtoDefinedDocument because
       # the proto syntax currently can't declare "sensitivity: []"
       if prop_name =~ /\bsecret\b/
-        Opus::Error.hard("#{@class}##{prop_name} has the word 'secret' in its name, but no " \
+        T::Configuration.hard_assert_handler(
+          "#{@class}##{prop_name} has the word 'secret' in its name, but no " \
           "'sensitivity:' annotation. This is probably wrong, because if a " \
           "prop is named 'secret' then it is probably sensitive. Add a " \
           "sensitivity annotation like 'sensitivity: Opus::Sensitivity::NonPII." \
           "security_token', or explicitly override this check with " \
-          "'sensitivity: []'.")
+          "'sensitivity: []'."
+        )
       end
     end
   end
@@ -651,9 +737,23 @@ class T::Props::Decorator
       self.class.decorator.foreign_prop_get(self, prop_name, foreign, rules, opts)
     end
 
+    force_fk_method = "#{fk_method}!"
+    @class.send(:define_method, force_fk_method) do |allow_direct_mutation: nil|
+      loaded_foreign = send(fk_method, allow_direct_mutation: allow_direct_mutation)
+      if !loaded_foreign
+        T::Configuration.hard_assert_handler(
+          'Failed to load foreign model',
+          storytime: {method: force_fk_method, class: self.class}
+        )
+      end
+      T.must(loaded_foreign)
+    end
+
     @class.send(:define_method, "#{prop_name}_record") do |allow_direct_mutation: nil|
-      Opus::Error.soft("Using deprecated 'model.#{prop_name}_record' foreign key syntax. You should replace this with 'model.#{prop_name}_'",
-        notify: 'vasi')
+      T::Configuration.soft_assert_handler(
+        "Using deprecated 'model.#{prop_name}_record' foreign key syntax. You should replace this with 'model.#{prop_name}_'",
+        notify: 'vasi'
+      )
       send(fk_method, allow_direct_mutation: allow_direct_mutation)
     end
   end
@@ -693,7 +793,7 @@ class T::Props::Decorator
   #
   # This gets called when a module or class that extends T::Props gets included, extended,
   # prepended, or inherited.
-  sig {params(child: DecoratedClass).void}
+  T::Sig::WithoutRuntime.sig {params(child: DecoratedClass).void}
   def model_inherited(child)
     child.extend(T::Props::ClassMethods)
     child.plugins.concat(decorated_class.plugins)
@@ -714,7 +814,7 @@ class T::Props::Decorator
     end
   end
 
-  sig {params(mod: Module).void}
+  T::Sig::WithoutRuntime.sig {params(mod: Module).void}
   def plugin(mod)
     decorated_class.plugins << mod
     Private.apply_class_methods(mod, decorated_class)

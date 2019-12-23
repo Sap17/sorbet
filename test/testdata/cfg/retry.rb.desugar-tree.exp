@@ -1,0 +1,23 @@
+class <emptyTree><<C <root>>> < ()
+  def main<<C <todo sym>>>(&<blk>)
+    begin
+      try = 0
+      if try.<(3)
+        begin
+          try = try.+(1)
+          <self>.raise("e")
+        end
+      else
+        <emptyTree>
+      end
+    rescue => <rescueTemp>$2
+      begin
+        <self>.puts("rescue")
+        retry
+        1
+      end
+    end
+  end
+
+  <self>.main()
+end

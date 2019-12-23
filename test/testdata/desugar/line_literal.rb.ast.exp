@@ -1,3 +1,0 @@
-class <emptyTree><<C <U <root>>>> < ()
-  <U <self>>.<U puts>("\n".<U concat>(3.<U to_s>()).<U to_s>())
-end

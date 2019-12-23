@@ -10,12 +10,15 @@ cc_library(
         "//conditions:default": 1,
     }),
     visibility = ["//visibility:public"],
+    deps = [
+        "//common",
+    ],
 )
 
 config_setting(
     name = "be-versioned",
     values = {
-        "define": "release=true",
+        "define": "versioned=true",
     },
 )
 
@@ -37,4 +40,5 @@ genrule(
       > "$@"
     """,
     stamp = 1,
+    tags = ["manual"],
 )

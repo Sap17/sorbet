@@ -6,6 +6,7 @@ require_relative '../real_stdlib'
 
 require 'set'
 require 'fileutils'
+require 'delegate'
 
 
 module Sorbet::Private
@@ -15,17 +16,22 @@ module Sorbet::Private
     class TracepointSerializer
       SPECIAL_METHOD_NAMES = %w[! ~ +@ ** -@ * / % + - << >> & | ^ < <= => > >= == === != =~ !~ <=> [] []= `]
 
-      # These methods don't match the signatures of their parents, so if we let
-      # them monkeypatch, they won't be subtypes anymore. Just don't support the
-      # bad monkeypatches.
       BAD_METHODS = [
+        # These methods don't match the signatures of their parents, so if we let
+        # them monkeypatch, they won't be subtypes anymore. Just don't support the
+        # bad monkeypatches.
         ['activesupport', 'Time', :to_s],
         ['activesupport', 'Time', :initialize],
+
+        # These methods cause TracepointSerializer to hang the Ruby process when
+        # running Ruby 2.3. See https://github.com/sorbet/sorbet/issues/1145
+        ['activesupport', 'ActiveSupport::Deprecation', :new],
+        ['activesupport', 'ActiveSupport::Deprecation', :allocate],
       ]
 
       HEADER = Sorbet::Private::Serialize.header('true', 'gems')
 
-      Sorbet.sig {params(files: T::Hash, delegate_classes: T::Hash).void}
+      T::Sig::WithoutRuntime.sig {params(files: T::Hash, delegate_classes: T::Hash).void}
       def initialize(files:, delegate_classes:)
         @files = files
         @delegate_classes = delegate_classes
@@ -34,11 +40,11 @@ module Sorbet::Private
         @prev_anonymous_id = 0
       end
 
-      Sorbet.sig {params(output_dir: String).void}
+      T::Sig::WithoutRuntime.sig {params(output_dir: String).void}
       def serialize(output_dir)
         gem_class_defs = preprocess(@files)
 
-        FileUtils.mkdir_p(output_dir)
+        FileUtils.mkdir_p(output_dir) unless gem_class_defs.empty?
 
         gem_class_defs.each do |gem, klass_ids|
           File.open("#{File.join(output_dir, gem[:gem])}.rbi", 'w') do |f|
@@ -61,14 +67,15 @@ module Sorbet::Private
                 case item[:type]
                 when :method
                   if !valid_method_name?(item[:method])
-                    warn("Invalid method name: #{klass}.#{item[:method]}")
+                    # warn("Invalid method name: #{klass}.#{item[:method]}")
                     next
                   end
                   if BAD_METHODS.include?([gem[:gem], class_name(klass), item[:method]])
                     next
                   end
                   begin
-                    method = item[:singleton] ? klass.method(item[:method]) : klass.instance_method(item[:method])
+                    method = item[:singleton] ? Sorbet::Private::RealStdlib.real_method(klass, item[:method]) : klass.instance_method(item[:method])
+
                     "#{generate_method(method, !item[:singleton])}"
                   rescue NameError
                   end
@@ -98,10 +105,17 @@ module Sorbet::Private
         files.each_with_object({}) do |(path, defined), gem_class_defs|
           gem = gem_from_location(path)
           if gem.nil?
-            warn("Can't find gem for #{path}")
+            warn("Can't find gem for #{path}") unless path.start_with?(Dir.pwd)
             next
           end
           next if gem[:gem] == 'ruby'
+          # We're currently ignoring bundler, because we can't easily pin
+          # everyone to the same version of bundler in tests and in CI.
+          # There is an RBI for bundler in sorbet-typed.
+          next if gem[:gem] == 'bundler'
+          # We ignore sorbet-runtime because because we write the RBI for it into our payload.
+          # For some reason, runtime reflection generates methods with incorrect arities.
+          next if gem[:gem] == 'sorbet-runtime'
 
           gem_class_defs[gem] ||= {}
           defined.each do |item|
@@ -202,8 +216,9 @@ module Sorbet::Private
       def gem_from_location(location)
         match =
           location&.match(/^.*\/(ruby)\/([\d.]+)\//) || # ruby stdlib
+          location&.match(/^.*\/(j?ruby)-([\d.]+)\//) || # jvm ruby stdlib
           location&.match(/^.*\/(site_ruby)\/([\d.]+)\//) || # rubygems
-          location&.match(/^.*\/gems\/[\d.]+(?:\/bundler)?\/gems\/([^\/]+)-([^-\/]+)\//i) # gem
+          location&.match(/^.*\/gems\/(?:j?ruby-)?[\d.]+(?:@[^\/]+)?(?:\/bundler)?\/gems\/([^\/]+)-([^-\/]+)\//i) # gem
         if match.nil?
           # uncomment to generate files for methods outside of gems
           # {
@@ -234,7 +249,7 @@ module Sorbet::Private
 
         # if the name doesn't only contain word characters and ':', or any part doesn't start with a capital, Sorbet doesn't support it
         if name !~ /^[\w:]+$/ || !name.split('::').all? { |part| part =~ /^[A-Z]/ }
-          warn("Invalid class name: #{name}")
+          # warn("Invalid class name: #{name}")
           id = @anonymous_map[Sorbet::Private::RealStdlib.real_object_id(klass)] ||= anonymous_id
           return "InvalidName_#{name.gsub(/[^\w]/, '_').gsub(/0x([0-9a-f]+)/, '0x00')}_#{id}"
         end

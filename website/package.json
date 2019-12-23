@@ -1,4 +1,6 @@
 {
+  "private": true,
+  "license": "Apache-2.0",
   "scripts": {
     "examples": "docusaurus-examples",
     "start": "docusaurus-start",
@@ -6,9 +8,18 @@
     "publish-gh-pages": "docusaurus-publish",
     "write-translations": "docusaurus-write-translations",
     "version": "docusaurus-version",
-    "rename-version": "docusaurus-rename-version"
+    "rename-version": "docusaurus-rename-version",
+    "prettier": "prettier --write './**/*.js' './**/*.css' './**/*.md'",
+    "prettier-check": "prettier --check './**/*.js' './**/*.css' './**/*.md'"
   },
   "devDependencies": {
-    "docusaurus": "^1.6.2"
+    "docusaurus": "^1.10.0",
+    "prettier": "1.18.2"
+  },
+  "dependencies": {
+    "classnames": "^2.2.6"
+  },
+  "resolutions": {
+    "**/underscore.string": "^3.3.5"
   }
 }

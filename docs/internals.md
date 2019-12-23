@@ -3,8 +3,8 @@
 This doc is for people interested in learning how Sorbet works for the purpose
 of contributing to the codebase.
 
-For how to use Sorbet, see <http://go/types>.
-For how to build and test Sorbet, see the README.
+For how to use Sorbet, see <https://sorbet.org/docs/overview>.
+For how to build and test Sorbet, see the [README](../README.md).
 
 Otherwise, welcome!
 
@@ -16,10 +16,12 @@ unfinished or confusing section!
 ## Table of Contents
 
 - [Overview](#overview)
+- [Pipeline](#pipeline)
 - [Phases](#phases)
   - [Parser](#parser)
   - [Desugar](#desugar)
-  - [DSL](#dsl)
+  - [Rewriter](#rewriter)
+  - [LocalVars](#localvars)
   - [Namer](#namer)
   - [Resolver](#resolver)
   - [CFG](#cfg)
@@ -30,6 +32,7 @@ unfinished or confusing section!
 - [Work In Progress](#work-in-progress)
   - [`Name`s](#names)
   - [`ast::Expression` (aka Trees)](#astexpression-aka-trees)
+  - [`typecase`](#typecase)
   - [`core::Loc`](#coreloc)
   - [`beginError` and strictness levels](#beginerror-and-strictness-levels)
   - [The type system](#the-type-system)
@@ -37,6 +40,7 @@ unfinished or confusing section!
   - [LSP](#lsp)
   - [RBI files and the payload](#rbi-files-and-the-payload)
   - [General tips for learning about sorbet](#general-tips-for-learning-about-sorbet)
+  - [Other topics to document](#other-topics-to-document)
 
 <!-- END doctoc generated TOC please keep comment here to allow auto update -->
 
@@ -62,6 +66,7 @@ sorbet
 ├── ast
 │   └── desugar
 ├── dsl
+├── local_vars
 ├── namer
 ├── resolver
 ├── cfg
@@ -75,6 +80,11 @@ sorbet
 ├── core            → Sorbet-specific data structures and utilities.
 │   └── types       → Our type system is shared by many passes of the
 │                     pipeline code above.
+│
+│   // 4. Gems
+├── gems
+│   ├── sorbet          → The Ruby source for `srb init`.
+│   └── sorbet-runtime  → The Ruby source for the runtime type checks.
 └── ···
 ```
 
@@ -86,32 +96,37 @@ In particular, to understand the phases, you have to understand the core
 abstractions, but being familiar with the phases motivates why certain core
 abstractions exist.
 
+## Pipeline
+
+When learning about the phases in the next, it can be helpful to look at this
+high-level architecture diagram of Sorbet's core type checking pipeline:
+
+[→ docs/pipeline.md](pipeline.md)
+
 ## Phases
 
-<!-- TODO(jez) Which GlobalState data structures are populated/frozen when? -->
-<!-- TODO(jez) Consider talking about GlobalState, Symbols, etc. first -->
-
 IR stands for "internal representation". Each phase either translates from one
-IR to another, or modifies an existing IR.
-
-| Translation Pass | IR                  | Rewrite Pass   |
-| ---------------- | --                  | ------------   |
-|                  | source files        |                |
-| [Parser]         |                     |                |
-|                  | [`parser::Node`]    |                |
-| [Desugar]        |                     |                |
-|                  | [`ast::Expression`] | [DSL]          |
-|                  | [`ast::Expression`] | [Namer] (*)    |
-|                  | [`ast::Expression`] | [Resolver] (*) |
-| [CFG]            |                     |                |
-|                  | [`cfg::CFG`]        | [Infer]        |
-
-This table shows the order of the phases, what IR they operate on, and whether
-they translate from one IR to another or make modifications within the IR they
-were given.
+IR to another, or modifies an existing IR. This table shows the order of the
+phases, what IR they operate on, and whether they translate from one IR to
+another or make modifications within the IR they were given.
 
 > `*`: Even though these passes modify the IR they're given, they have another
 > important job which is to populate GlobalState.
+
+
+|     | Translation Pass                 | IR                  | Rewrite Pass                      |
+| --- | ----------------                 | --                  | ------------                      |
+|     |                                  | source files        |                                   |
+| 1   | [Parser], `-p parse-tree`        |                     |                                   |
+|     |                                  | [`parser::Node`]    |                                   |
+| 2   | [Desugar], `-p desugar-tree`     |                     |                                   |
+| 3   |                                  | [`ast::Expression`] | [Rewriter]                             |
+| 4   |                                  | [`ast::Expression`] | [LocalVars], `-p rewrite-tree`        |
+| 5   |                                  | [`ast::Expression`] | [Namer], `-p name-tree` (*)       |
+| 6   |                                  | [`ast::Expression`] | [Resolver], `-p resolve-tree` (*) |
+| 6   |                                  | [`ast::Expression`] | [Flattener], `-p flatten-tree`    |
+| 7   | [CFG], `-p cfg --stop-after cfg` |                     |                                   |
+| 8   |                                  | [`cfg::CFG`]        | [Infer], `-p cfg`                 |
 
 When you see links to files below, you should **open the file** and give it a
 quick skim before continuing. Most of the sections below are written like a
@@ -123,7 +138,11 @@ phase to the next:
 
 - `-p, --print <state>`
   - Prints Sorbet's internal state, including any of the IRs.
-- `--stop-after-phase <phase>`
+  - Only some of the printing options are shown in the table above. See the help
+    for all the options.
+  - When getting started with Sorbet, oftentimes the `***-raw` variants of the
+    printing options are more useful, until you get familiar with the codebase.
+ - `--stop-after <phase>`
   - Stop Sorbet early
 
 We will discuss individual phases and IRs below.
@@ -142,7 +161,7 @@ The header itself is generated using [parser/tools/generate_ast.cc].
 
 In general, the IR the parser generates is intended to model Ruby very
 granularly, but is frequently redundant for the purpose of typechecking. We use
-the Desugar and DSL passes to simplify the IR before typechecking.
+the Desugar and Rewriter passes to simplify the IR before typechecking.
 
 
 ### Desugar
@@ -165,13 +184,13 @@ Some examples of things we desugar in this pass:
 - compound assignment operators (`+=`) become normal assignments (`x = x + 1`)
 - `unless <cond>` becomes `if !<cond>`
 
-If you pass the `-p ast` or `-p ast-raw` option to `sorbet`, you can see what a
-Ruby program looks like after being desugared.
+If you pass the `-p desugar-tree` or `-p desugar-tree-raw` option to `sorbet`,
+you can see what a Ruby program looks like after being desugared.
 
 
-### DSL
+### Rewriter
 
-The DSL pass is sort of like a domain-specific desugar pass. It takes
+The Rewriter pass is sort of like a domain-specific desugar pass. It takes
 [`ast::Expression`]s and rewrites specific Ruby DSLs and metaprogramming into
 code that Sorbet can analyze. DSL in this context can have a broad meaning. Some
 examples of DSLs that are rewritten by this pass:
@@ -182,18 +201,24 @@ examples of DSLs that are rewritten by this pass:
 
 - `Chalk::ODM`'s `prop` definitions are written similarly to `attr_reader`
 
-The core dsl pass lives in [dsl/dsl.cc].
-Each DSL pass lives in its own file in the [dsl/] folder.
+The core Rewriter pass lives in [rewriter/rewriter.cc].
+Each Rewriter pass lives in its own file in the [rewriter/] folder.
 
 In the future, we anticipate rewriting the DSL phase with a plugin architecture.
 This will allow for a wider audience of Rubyists to teach Sorbet about DSLs
 they've written.
 
-We artificially limit what code we call from DSL passes. Sometimes it would be
+We artificially limit what code we call from Rewriter passes. Sometimes it would be
 convenient to call into other phases of Sorbet, but instead we've reimplemented
-functionality in the DSL pass. This keeps the surface area of the API we'll have
+functionality in the Rewriter pass. This keeps the surface area of the API we'll have
 to present to plugins in the future small.
 
+
+### LocalVars
+
+TODO(jez) This needs to be documented more fully.
+
+Creates `ast::Local`s from `ast::UnresolvedIdent`s.
 
 ### Namer
 
@@ -320,6 +345,17 @@ more modularity. In particular, it's feasible that we enter `Symbol`s for
 constants and then resolve constants before entering `Symbol`s for methods and
 resolving sigs.
 
+### Flattener
+
+The flattener is (currently) the final pass that processes the ast. The goal
+here is to move around all the nodes so that the final result only had top level
+classes and they only contain method definitions. All the bodies of the classes
+are moved to special `<static-init>` methods. The top level statements in
+the file are moved to a `<static-init>` method on the synthetic `<root>` object.
+
+You can always view the final result of all ast transforms with `-p ast`.
+
+
 ### CFG
 
 CFG is another translation pass, this time from [`ast::Expression`s] into
@@ -370,6 +406,20 @@ every method (defaulting to `T.untyped` if no sig was given). When sorbet
 encounters a method call (`cfg::Send`), it *always* looks up the type on record
 for that method rather than trying to infer it from the flow of control.
 
+Some things which are different about Sorbet's CFG than other CFG's you might be
+familiar with:
+
+- In Ruby, nearly every instruction can `raise` inside a `begin ... rescue`
+  block. But in Sorbet, we pretend that the jump to the `rescue` block happens
+  instead either immediately after entering a block, or at the very end of a
+  block.
+
+- Our CFG is **not** static single assignment (SSA), because we haven't needed
+  the power that SSA gives rise to. Instead, we largely make do by "pinning"
+  variables in outer scopes to a certain type, and saying that assignments
+  to those variables in inner scopes (i.e., within a loop or if) must not
+  change the variable's type.
+
 Sorbet's use of a CFG for type inference is pretty cool. By doing inference on
 the CFG and keeping careful track of file locations (see [`core::Loc`]),
 Sorbet's inference algorithm can be very general. We only have to implement
@@ -400,7 +450,7 @@ Some notes about how to read these:
 
 ### Infer
 
-Infer is the last pass. It operates directly on a [`cfg::CFG`]. In pariticular,
+Infer is the last pass. It operates directly on a [`cfg::CFG`]. In particular,
 when the CFG is created, each binding has `nullptr` for the local's type. By the
 end of inference, reachable bindings within basic blocks will have had their
 types directly filled in.
@@ -416,7 +466,7 @@ For each binding in each basic block, we
 In particular, we visit each binding once to decide on its type. There is no
 backsolving for types or iterating until a fixed point. Since the CFG can have
 cycles, we require that within a cycle of basic blocks a variable's type cannot
-be widened or changed. (See <http://go/e/7001>.)
+be widened or changed. (See <http://srb.help/7001>.)
 
 The inference pass itself is largely just traversing the the CFG for each method
 and processing bindings. It delegates much of the implementation of the type
@@ -557,12 +607,28 @@ See [core/Symbols.h] and [core/SymbolRef.h] for more information.
 - Finish this doc on things I learned about C++
   - <https://paper.dropbox.com/doc/1tl7PTJjFCHEQ21S8LSld>
 
+### Other topics to document
+
+- `sanityCheck`s and `ENFORCE`s
+  - both: only in debug builds
+  - `sanityCheck`: internal consistency check, run at pre-determined times (like
+    "after desugar")
+  - `ENFORCE`: in-line assertion (pre- / post-condition)
+- `show` vs `toString`
+  - most data structures have both methods
+  - `show` is "something that could be shown to the user" (like Rust `Display`
+    trait)
+  - `toString` is "internal representation" (like Rust `Debug` trait)
+- `gems/sorbet/` (`srb init`)
+- `gems/sorbet-runtime/`
+
 <!-- -- Links -------------------------------------------------------------- -->
 
 <!-- Phase descriptions -->
 [parser]: #parser
 [desugar]: #desugar
-[dsl]: #dsl
+[rewriter]: #rewriter
+[localvars]: #localvars
 [namer]: #namer
 [resolver]: #resolver
 [cfg]: #cfg
@@ -581,8 +647,8 @@ See [core/Symbols.h] and [core/SymbolRef.h] for more information.
 <!-- Files -->
 [parser/tools/generate_ast.cc]: ../parser/tools/generate_ast.cc
 [ast/desugar/Desugar.cc]: ../ast/desugar/Desugar.cc
-[dsl/dsl.cc]: ../dsl/dsl.cc
-[dsl/]: ../dsl/
+[rewriter/rewriter.cc]: ../rewriter/rewriter.cc
+[rewriter/]: ../rewriter/
 [namer/namer.cc]: ../namer/namer.cc
 [resolver/resolver.cc]: ../resolver/resolver.cc
 [cfg/CFG.h]: ../cfg/CFG.h

@@ -3,13 +3,12 @@
 
 #include "core/Names.h"
 #include "core/StrictLevel.h"
-#include <atomic>
-#include <optional>
 #include <string>
 
 namespace sorbet::core {
 class GlobalState;
 class File;
+struct GlobalStateHash;
 namespace serialize {
 class SerializerImpl;
 }
@@ -34,6 +33,10 @@ public:
 
     bool operator<(const FileRef &rhs) const {
         return _id < rhs._id;
+    }
+
+    bool operator>(const FileRef &rhs) const {
+        return _id > rhs._id;
     }
 
     inline u2 id() const {
@@ -67,6 +70,9 @@ public:
     bool cachedParseTree = false;
     bool hasParseErrors = false; // some reasonable invariants don't hold for invalid files
     bool pluginGenerated = false;
+    // Epoch is _only_ used in LSP mode. Do not depend on it elsewhere.
+    // TODO(jvilk): Delurk epoch usage and use something like pointer equality to check if a file has changed.
+    const u4 epoch;
 
     friend class GlobalState;
     friend class ::sorbet::core::serialize::SerializerImpl;
@@ -79,8 +85,9 @@ public:
 
     bool isPayload() const;
     bool isRBI() const;
+    bool isStdlib() const;
 
-    File(std::string &&path_, std::string &&source_, Type sourceType);
+    File(std::string &&path_, std::string &&source_, Type sourceType, u4 epoch = 0);
     File(File &&other) = delete;
     File(const File &other) = delete;
     File() = delete;
@@ -89,8 +96,6 @@ public:
     int lineCount() const;
     StrictLevel minErrorLevel() const;
 
-    std::optional<unsigned int> getDefinitionHash() const;
-    void setDefinitionHash(unsigned int) const;
     /** Given a 1-based line number, returns a string view of the line. */
     std::string_view getLine(int i);
 
@@ -99,7 +104,6 @@ private:
     const std::string source_;
     mutable std::shared_ptr<std::vector<int>> lineBreaks_;
     mutable StrictLevel minErrorLevel_ = StrictLevel::Max;
-    mutable std::atomic<unsigned int> globalStateHash = 0;
 
 public:
     const StrictLevel originalSigil;

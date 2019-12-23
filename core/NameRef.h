@@ -33,7 +33,7 @@ struct NameRefDebugCheck {
 
     constexpr NameRefDebugCheck() : globalStateId(-1) {}
 
-    NameRefDebugCheck(int globalStateId) : globalStateId(globalStateId) {}
+    NameRefDebugCheck(const GlobalState &gs, int id);
 
     void check(const GlobalState &gs, int id) const;
     void check(const GlobalSubstitution &subst) const;
@@ -88,13 +88,14 @@ public:
     }
 
     NameRef addEq(GlobalState &gs) const;
+    NameRef addQuestion(GlobalState &gs) const;
 
     NameRef addAt(GlobalState &gs) const;
 
     NameRef prepend(GlobalState &gs, std::string_view s) const;
 
+    std::string showRaw(const GlobalState &gs) const;
     std::string toString(const GlobalState &gs) const;
-
     std::string show(const GlobalState &gs) const;
 
     void enforceCorrectGlobalState(const GlobalState &gs) const;

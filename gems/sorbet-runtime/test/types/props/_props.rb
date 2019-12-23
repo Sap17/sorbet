@@ -33,9 +33,14 @@ class Opus::Types::Test::Props::PropsTest < Critic::Unit::UnitTest
     prop :prop2, Integer, ifunset: 42
     prop :shadowed, String
 
+    orig_verbose = $VERBOSE
+    $VERBOSE = false
+
     def shadowed
       "I can't let you see that"
     end
+
+    $VERBOSE = orig_verbose
   end
 
   class SubProps
@@ -106,7 +111,7 @@ class Opus::Types::Test::Props::PropsTest < Critic::Unit::UnitTest
       d = TestRedactedProps.new
       d.secret = '1234abcd'
       assert_equal('1234abcd', d.secret)
-      assert_equal('1234...', d.secret_redacted)
+      assert_equal('1...', d.secret_redacted)
     end
   end
 
@@ -116,7 +121,7 @@ class Opus::Types::Test::Props::PropsTest < Critic::Unit::UnitTest
       @id = id
     end
 
-    def self.load(id, extra={}, opts={}) # rubocop:disable PrisonGuard/BanBuiltinMethodOverride
+    def self.load(id, extra={}, opts={})
       return nil if id.nil?
       MyTestModel.new(id)
     end
@@ -146,31 +151,6 @@ class Opus::Types::Test::Props::PropsTest < Critic::Unit::UnitTest
       test_model = obj.foreign2_
       assert(test_model)
       assert_equal(obj.foreign2, test_model.id)
-    end
-  end
-
-  class BionicleEnum < Opus::Enum
-    GALI = new
-    POHATU = new
-    ONUA = new
-  end
-
-  describe 'deep_clone_object utils method treats Opus::Enum as basic type' do
-    it 'Results in same object_id for enum' do
-      first = BionicleEnum::GALI
-      cloned = T::Props::Utils.deep_clone_object(BionicleEnum::GALI)
-      assert_equal(cloned, first)
-      assert_equal(cloned.object_id, first.object_id)
-    end
-
-    it 'Results in same object if Enum is a nested object' do
-      mapping = {BionicleEnum::ONUA => BionicleEnum::GALI, "foo" => {BionicleEnum::POHATU => "a toa"}, "onua" => BionicleEnum::ONUA}
-      cloned = T::Props::Utils.deep_clone_object(mapping)
-      assert_equal(cloned, mapping)
-      assert_equal(cloned["onua"].object_id, mapping["onua"].object_id)
-      assert_equal(cloned["foo"], mapping["foo"])
-      assert_equal(cloned[BionicleEnum::ONUA], mapping[BionicleEnum::ONUA])
-      assert_equal(cloned.keys, mapping.keys)
     end
   end
 end

@@ -31,6 +31,14 @@ All commands must be run from within Sorbet's top-level `website/` folder.
     ❯ yarn start
     ```
 
+1.  Format your changes with Prettier:
+
+    ```sh
+    ❯ yarn prettier
+    ```
+
+    (Recommended: set up your editor to run Prettier on save.)
+
 1.  The build should be automatically deployed when pushing to `github.com`.
     To deploy manually:
 
@@ -92,13 +100,9 @@ For more information about adding new docs, click
 
 ## Docusaurus blog
 
-Docusaurus supports having a blog, which are basically docs with release dates,
-and they show up in a separate section.
-
-We're currently not using the blog for anything, but we could use it in the
-future for release notes, communicating roadmaps, etc.
-
-For more information about blog posts, click
+We are using Docusaurus' blog mechanism, which is basically a set of docs with
+release dates and which shows up in a separate section. For more information
+about blog posts, click
 [here](https://docusaurus.io/docs/en/adding-blog).
 
 ## A note about logos

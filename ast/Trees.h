@@ -11,9 +11,9 @@
 
 //
 // This file defines the IR that most of the middle phases of Sorbet operate on
-// and manipulate It aims to be a middle ground between the parser output (very
-// verbose and fine grained) and the CFG data structure (very easy to typecheck
-// but very hard to do ad-hoc transformations on).
+// and manipulate. It aims to be a middle ground between the parser output
+// (very verbose and fine grained) and the CFG data structure (very easy to
+// typecheck but very hard to do ad-hoc transformations on).
 //
 // This IR is best learned by example. Try using the `--print` option to sorbet
 // on a handful of test/testdata files. Since there are multiple phases that
@@ -54,6 +54,23 @@ public:
 struct ParsedFile {
     std::unique_ptr<ast::Expression> tree;
     core::FileRef file;
+};
+
+/**
+ * Stores a vector of `ParsedFile`s. May be empty if pass was canceled or encountered an error.
+ * TODO: Modify to store reason if we ever have multiple reasons for a pass to stop. Currently, it's only empty if the
+ * pass is canceled in LSP mode.
+ */
+class ParsedFilesOrCancelled final {
+private:
+    std::optional<std::vector<ParsedFile>> trees;
+
+public:
+    ParsedFilesOrCancelled();
+    ParsedFilesOrCancelled(std::vector<ParsedFile> &&trees);
+
+    bool hasResult() const;
+    std::vector<ParsedFile> &result();
 };
 
 template <class To> To *cast_tree(Expression *what) {
@@ -132,7 +149,7 @@ public:
 
     enum Flags {
         SelfMethod = 1,
-        DSLSynthesized = 2,
+        RewriterSynthesized = 2,
     };
 
     MethodDef(core::Loc loc, core::Loc declLoc, core::SymbolRef symbol, core::NameRef name, ARGS_store args,
@@ -146,8 +163,16 @@ public:
         return (flags & SelfMethod) != 0;
     }
 
-    bool isDSLSynthesized() const {
-        return (flags & DSLSynthesized) != 0;
+    bool isRewriterSynthesized() const {
+        return (flags & RewriterSynthesized) != 0;
+    }
+
+    void setIsSelf(bool isSelf) {
+        if (isSelf) {
+            flags |= SelfMethod;
+        } else {
+            flags &= ~SelfMethod;
+        }
     }
 
 private:
@@ -293,21 +318,6 @@ private:
 };
 // CheckSize(Rescue, 64, 8);
 
-class Field final : public Reference {
-public:
-    core::SymbolRef symbol;
-
-    Field(core::Loc loc, core::SymbolRef symbol);
-    virtual std::string toStringWithTabs(const core::GlobalState &gs, int tabs = 0) const;
-    virtual std::string showRaw(const core::GlobalState &gs, int tabs = 0);
-    virtual std::string nodeName();
-    virtual std::unique_ptr<Expression> _deepCopy(const Expression *avoid, bool root = false) const;
-
-private:
-    virtual void _sanityCheck();
-};
-// CheckSize(Field, 24, 8);
-
 class Local final : public Reference {
 public:
     core::LocalVariable localVariable;
@@ -444,7 +454,8 @@ public:
     core::NameRef fun;
 
     static const int PRIVATE_OK = 1 << 0;
-    u4 flags = 0;
+    static const int REWRITER_SYNTHESIZED = 1 << 1;
+    u4 flags;
 
     std::unique_ptr<Expression> recv;
 
@@ -454,11 +465,19 @@ public:
     std::unique_ptr<Block> block; // null if no block passed
 
     Send(core::Loc loc, std::unique_ptr<Expression> recv, core::NameRef fun, ARGS_store args,
-         std::unique_ptr<Block> block = nullptr);
+         std::unique_ptr<Block> block = nullptr, u4 flags = 0);
     virtual std::string toStringWithTabs(const core::GlobalState &gs, int tabs = 0) const;
     virtual std::string showRaw(const core::GlobalState &gs, int tabs = 0);
     virtual std::string nodeName();
     virtual std::unique_ptr<Expression> _deepCopy(const Expression *avoid, bool root = false) const;
+
+    bool isRewriterSynthesized() const {
+        return (flags & REWRITER_SYNTHESIZED) != 0;
+    }
+
+    bool isPrivateOk() const {
+        return (flags & PRIVATE_OK) != 0;
+    }
 
 private:
     virtual void _sanityCheck();
@@ -473,7 +492,7 @@ public:
     core::TypePtr type;
     std::unique_ptr<Expression> arg;
 
-    Cast(core::Loc loc, const core::TypePtr &ty, std::unique_ptr<Expression> arg, core::NameRef cast);
+    Cast(core::Loc loc, core::TypePtr ty, std::unique_ptr<Expression> arg, core::NameRef cast);
     virtual std::string toStringWithTabs(const core::GlobalState &gs, int tabs = 0) const;
     virtual std::string showRaw(const core::GlobalState &gs, int tabs = 0);
     virtual std::string nodeName();
@@ -598,7 +617,6 @@ private:
 
 class Block final : public Expression {
 public:
-    core::SymbolRef symbol;
     MethodDef::ARGS_store args;
     std::unique_ptr<Expression> body;
 
@@ -607,8 +625,6 @@ public:
     virtual std::string showRaw(const core::GlobalState &gs, int tabs = 0);
     virtual std::string nodeName();
     virtual std::unique_ptr<Expression> _deepCopy(const Expression *avoid, bool root = false) const;
-
-private:
     virtual void _sanityCheck();
 };
 // CheckSize(Block, 56, 8);

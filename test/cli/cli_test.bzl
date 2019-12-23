@@ -11,15 +11,16 @@ def cli_test(path):
         srcs = [path],
         data = native.glob([
             "{}/**/*.rb".format(name),
+            "{}/**/*.rbi".format(name),
             "{}/*.rbi".format(name),
             "{}/*.yaml".format(name),
             "{}/*.input".format(name),
             "{}/sorbet/*".format(name),
             "{}/**/file_with_no_dot".format(name),
-        ]) + ["//main:sorbet"]
+        ]) + ["//main:sorbet", "@com_google_protobuf//:protoc", "//proto:protos"],
     )
 
-    output = path.replace('.sh', '.out')
+    output = path.replace(".sh", ".out")
 
     native.sh_test(
         name = test_name,
@@ -30,7 +31,7 @@ def cli_test(path):
             ":run_{}".format(name),
             output,
         ],
-        size = 'medium',
+        size = "medium",
     )
 
     native.sh_test(
@@ -43,21 +44,28 @@ def cli_test(path):
             output,
         ],
         tags = [
-            "manual", "external", "local",
+            "manual",
+            "external",
+            "local",
         ],
-        size = 'small',
+        size = "small",
     )
 
     return test_name
 
 def update_test():
     existing = native.existing_rules()
-    update_rules = [rule for (rule, data) in existing.items()
-                    if rule.startswith("update_") and data['kind'] == 'sh_test']
+    update_rules = [
+        rule
+        for (rule, data) in existing.items()
+        if rule.startswith("update_") and data["kind"] == "sh_test"
+    ]
     native.test_suite(
         name = "update",
         tags = [
-            "manual", "external", "local",
+            "manual",
+            "external",
+            "local",
         ],
         tests = update_rules,
     )

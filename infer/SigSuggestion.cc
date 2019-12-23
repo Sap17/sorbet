@@ -2,6 +2,7 @@
 #include "common/common.h"
 #include "core/Loc.h"
 #include "core/TypeConstraint.h"
+#include "core/lsp/QueryResponse.h"
 #include <optional>
 
 using namespace std;
@@ -9,98 +10,19 @@ using namespace std;
 namespace sorbet::infer {
 
 namespace {
-struct LocAndColumn {
-    core::Loc loc;
-    u4 padding;
-};
 
-//
-// For a given Loc, returns
-//
-// - the Loc corresponding to the first non-whitespace character on this line, and
-// - how many characters of the start of this line are whitespace.
-//
-LocAndColumn findStartOfLine(core::Context ctx, core::Loc loc) {
-    core::Loc::Detail startDetail = loc.position(ctx).first;
-    u4 lineStart = core::Loc::pos2Offset(loc.file().data(ctx), {startDetail.line, 1});
-    string_view lineView = loc.file().data(ctx).source().substr(lineStart);
-
-    u4 padding = lineView.find_first_not_of(" \t");
-    u4 startOffset = lineStart + padding;
-    return {core::Loc(loc.file(), startOffset, startOffset), padding};
-}
-
-optional<u4> startOfExistingSig(core::Context ctx, core::Loc loc) {
-    auto file = loc.file();
-    ENFORCE(file.exists());
-    auto textBeforeTheMethod = loc.file().data(ctx).source().substr(0, loc.beginPos());
-    auto lastSigCurly = textBeforeTheMethod.rfind("sig {");
-    auto lastSigDo = textBeforeTheMethod.rfind("sig do");
-    if (lastSigCurly != string_view::npos) {
-        if (lastSigDo != string_view::npos) {
-            return max(lastSigCurly, lastSigDo);
-        } else {
-            return lastSigCurly;
-        }
-    } else {
-        if (lastSigDo != string_view::npos) {
-            return lastSigDo;
-        } else {
-            // failed to find sig
-            return nullopt;
-        }
-    }
-}
-
-optional<u4> startOfExistingReturn(core::Context ctx, core::Loc loc) {
-    auto file = loc.file();
-    if (!file.exists()) {
-        return nullopt;
-    }
-
-    auto textBeforeTheMethod = file.data(ctx).source().substr(0, loc.beginPos());
-    auto lastReturns = textBeforeTheMethod.rfind("returns(");
-    auto lastVoid = textBeforeTheMethod.rfind("void");
-    if (lastReturns != string_view::npos) {
-        if (lastVoid != string_view::npos) {
-            return max(lastReturns, lastVoid);
-        } else {
-            return lastReturns;
-        }
-    } else {
-        if (lastVoid != string_view::npos) {
-            return lastVoid;
-        } else {
-            // failed to find sig
-            return nullopt;
-        }
-    }
-}
-
-// Walks the chain of attached classes to find the one at the end of the chain.
-core::SymbolRef topAttachedClass(core::Context ctx, core::SymbolRef classSymbol) {
-    while (true) {
-        auto attachedClass = classSymbol.data(ctx)->attachedClass(ctx);
-        if (!attachedClass.exists()) {
-            break;
-        }
-        classSymbol = attachedClass;
-    }
-    return classSymbol;
-}
-
-bool extendsTHelpers(core::Context ctx, core::SymbolRef enclosingClass) {
+bool extendsTSig(core::Context ctx, core::SymbolRef enclosingClass) {
     ENFORCE(enclosingClass.exists());
     auto enclosingSingletonClass = enclosingClass.data(ctx)->lookupSingletonClass(ctx);
     ENFORCE(enclosingSingletonClass.exists());
     return enclosingSingletonClass.data(ctx)->derivesFrom(ctx, core::Symbols::T_Sig());
 }
 
-optional<core::AutocorrectSuggestion> maybeSuggestExtendTHelpers(core::Context ctx, core::SymbolRef methodSymbol) {
+optional<core::AutocorrectSuggestion::Edit> maybeSuggestExtendTSig(core::Context ctx, core::SymbolRef methodSymbol) {
     auto method = methodSymbol.data(ctx);
 
-    auto enclosingClass = topAttachedClass(ctx, method->enclosingClass(ctx));
-    if (extendsTHelpers(ctx, enclosingClass)) {
+    auto enclosingClass = method->enclosingClass(ctx).data(ctx)->topAttachedClass(ctx);
+    if (extendsTSig(ctx, enclosingClass)) {
         // No need to suggest here, because it already has 'extend T::Sig'
         return nullopt;
     }
@@ -118,87 +40,38 @@ optional<core::AutocorrectSuggestion> maybeSuggestExtendTHelpers(core::Context c
     auto [classStart, classEnd] = classLoc->position(ctx);
 
     core::Loc::Detail thisLineStart = {classStart.line, 1};
-    core::Loc thisLineLoc = core::Loc::fromDetails(ctx, classLoc->file(), thisLineStart, thisLineStart);
-    auto thisLinePadding = findStartOfLine(ctx, thisLineLoc).padding;
+    auto thisLineLoc = core::Loc::fromDetails(ctx, classLoc->file(), thisLineStart, thisLineStart);
+    ENFORCE(thisLineLoc.has_value());
+    auto [_, thisLinePadding] = thisLineLoc.value().findStartOfLine(ctx);
 
-    ENFORCE(classStart.line + 1 <= classLoc->file().data(ctx).lineBreaks().size());
     core::Loc::Detail nextLineStart = {classStart.line + 1, 1};
-    core::Loc nextLineLoc = core::Loc::fromDetails(ctx, classLoc->file(), nextLineStart, nextLineStart);
-    auto [replacementLoc, nextLinePadding] = findStartOfLine(ctx, nextLineLoc);
+    auto nextLineLoc = core::Loc::fromDetails(ctx, classLoc->file(), nextLineStart, nextLineStart);
+    if (!nextLineLoc.has_value()) {
+        return nullopt;
+    }
+    auto [replacementLoc, nextLinePadding] = nextLineLoc.value().findStartOfLine(ctx);
 
     // Preserve the indentation of the line below us.
     string prefix(max(thisLinePadding + 2, nextLinePadding), ' ');
-    return core::AutocorrectSuggestion{nextLineLoc, fmt::format("{}extend T::Sig\n", prefix)};
+    return core::AutocorrectSuggestion::Edit{nextLineLoc.value(), fmt::format("{}extend T::Sig\n", prefix)};
 }
 
 core::TypePtr extractArgType(core::Context ctx, cfg::Send &send, core::DispatchComponent &component, int argId) {
-    // The high level idea is the following: we will use a covariant type parameter to extract the type from dispatch
-    // logic
-    auto constr = make_shared<core::TypeConstraint>();
-    auto linkCopy = send.link ? send.link->duplicate()
-                              : make_shared<core::SendAndBlockLink>(core::Symbols::noSymbol(), send.fun, std::nullopt);
-
-    auto probeTypeSym =
-        core::Symbols::Sorbet_Private_Static_ReturnTypeInference_guessed_type_type_parameter_holder_tparam_covariant();
-    InlinedVector<core::SymbolRef, 4> domainTemp;
-    InlinedVector<pair<core::SymbolRef, core::TypePtr>, 4> solutions;
-    domainTemp.emplace_back(probeTypeSym);
-    if (send.link && send.link->constr) {
-        for (auto domainSym : send.link->constr->getDomain()) {
-            domainTemp.emplace_back(domainSym);
-            solutions.emplace_back(make_pair(domainSym, send.link->constr->getInstantiation(domainSym)));
-        }
-    }
-
-    auto probe = probeTypeSym.data(ctx)->resultType;
-    constr->defineDomain(ctx, domainTemp);
-    for (auto &pair : solutions) {
-        auto tparam = pair.first.data(ctx)->resultType;
-        core::Types::isSubTypeUnderConstraint(ctx, *constr, tparam, pair.second);
-        core::Types::isSubTypeUnderConstraint(ctx, *constr, pair.second, tparam);
-    }
-
-    linkCopy->constr = constr;
-
-    core::CallLocs locs{
-        send.receiverLoc,
-        send.receiverLoc,
-        send.argLocs,
-    };
-    InlinedVector<unique_ptr<core::TypeAndOrigins>, 2> typeAndOriginsOwner;
-    InlinedVector<const core::TypeAndOrigins *, 2> args;
-
-    args.reserve(send.args.size());
-    int i = -1;
-    for (cfg::VariableUseSite &arg : send.args) {
-        i++;
-        core::TypePtr type;
-        if (i != argId) {
-            type = arg.type;
-        } else {
-            type = probe;
-        }
-        auto &t = typeAndOriginsOwner.emplace_back(make_unique<core::TypeAndOrigins>());
-        t->type = type;
-        t->origins.emplace_back(core::Loc::none());
-        args.emplace_back(t.get());
-    }
-    core::DispatchArgs dispatchArgs{send.fun, locs, args, send.recv.type, send.recv.type, linkCopy};
-
-    send.recv.type->dispatchCall(ctx, dispatchArgs);
-    if (!constr->isSolved()) {
-        constr->solve(ctx);
-    }
-    if (!constr->isSolved()) {
+    ENFORCE(component.method.exists() && component.method != core::Symbols::untyped());
+    const auto &args = component.method.data(ctx)->arguments();
+    if (argId >= args.size()) {
         return nullptr;
     }
-    return constr->getInstantiation(probeTypeSym);
+    const auto &to = args[argId].type;
+    if (!to || !to->isFullyDefined()) {
+        return nullptr;
+    }
+    return to;
 }
 
-void extractSendArgumentKnowledge(
-    core::Context ctx, core::Loc bindLoc, cfg::Send *snd,
-    const UnorderedMap<core::LocalVariable, InlinedVector<core::SymbolRef, 1>> &blockLocals,
-    UnorderedMap<core::SymbolRef, core::TypePtr> &blockArgRequirements) {
+void extractSendArgumentKnowledge(core::Context ctx, core::Loc bindLoc, cfg::Send *snd,
+                                  const UnorderedMap<core::LocalVariable, InlinedVector<core::NameRef, 1>> &blockLocals,
+                                  UnorderedMap<core::NameRef, core::TypePtr> &blockArgRequirements) {
     InlinedVector<unique_ptr<core::TypeAndOrigins>, 2> typeAndOriginsOwner;
     InlinedVector<const core::TypeAndOrigins *, 2> args;
 
@@ -207,6 +80,7 @@ void extractSendArgumentKnowledge(
         auto &t = typeAndOriginsOwner.emplace_back(make_unique<core::TypeAndOrigins>());
         t->type = arg.type;
         t->origins.emplace_back(core::Loc::none());
+        args.emplace_back(t.get());
     }
 
     core::CallLocs locs{
@@ -228,16 +102,21 @@ void extractSendArgumentKnowledge(
             continue;
         }
         core::TypePtr thisType;
-        for (auto &component : dispatchInfo.components) {
-            auto argType = extractArgType(ctx, *snd, component, i);
-            if (argType && !argType->isUntyped()) {
-                if (!thisType) {
-                    thisType = argType;
-                } else {
-                    // 'or' together every dispatch component for _this_ usage site
-                    thisType = core::Types::lub(ctx, thisType, argType);
+        auto iter = &dispatchInfo;
+        while (iter != nullptr) {
+            if (iter->main.method.exists() && iter->main.method != core::Symbols::untyped()) {
+                auto argType = extractArgType(ctx, *snd, iter->main, i);
+                if (argType && !argType->isUntyped()) {
+                    if (!thisType) {
+                        thisType = argType;
+                    } else {
+                        // 'or' together every dispatch component for _this_ usage site
+                        thisType = core::Types::lub(ctx, thisType, argType);
+                    }
                 }
             }
+
+            iter = iter->secondary.get();
         }
         if (!thisType) {
             continue;
@@ -254,18 +133,14 @@ void extractSendArgumentKnowledge(
     }
 }
 
-UnorderedMap<core::SymbolRef, core::TypePtr> guessArgumentTypes(core::Context ctx, core::SymbolRef methodSymbol,
-                                                                unique_ptr<cfg::CFG> &cfg) {
+UnorderedMap<core::NameRef, core::TypePtr> guessArgumentTypes(core::Context ctx, core::SymbolRef methodSymbol,
+                                                              unique_ptr<cfg::CFG> &cfg) {
     // What variables by the end of basic block could plausibly contain what arguments.
-    vector<UnorderedMap<core::LocalVariable, InlinedVector<core::SymbolRef, 1>>> localsStoringArguments;
+    vector<UnorderedMap<core::LocalVariable, InlinedVector<core::NameRef, 1>>> localsStoringArguments;
     localsStoringArguments.resize(cfg->maxBasicBlockId);
 
-    // what methods have been called on arguments, per basic block
-    vector<UnorderedMap<core::SymbolRef, InlinedVector<core::NameRef, 1>>> methodsCalledOnArguments;
-    methodsCalledOnArguments.resize(cfg->maxBasicBlockId);
-
     // indicates what type should an argument have for basic block to execute
-    vector<UnorderedMap<core::SymbolRef, core::TypePtr>> argTypesForBBToPass;
+    vector<UnorderedMap<core::NameRef, core::TypePtr>> argTypesForBBToPass;
     argTypesForBBToPass.resize(cfg->maxBasicBlockId);
 
     // This loop computes per-block requirements... Should be a method on its own
@@ -274,11 +149,9 @@ UnorderedMap<core::SymbolRef, core::TypePtr> guessArgumentTypes(core::Context ct
         if (bb == cfg->deadBlock()) {
             continue;
         }
-        UnorderedMap<core::LocalVariable, InlinedVector<core::SymbolRef, 1>> &blockLocals =
+        UnorderedMap<core::LocalVariable, InlinedVector<core::NameRef, 1>> &blockLocals =
             localsStoringArguments[bb->id];
-        UnorderedMap<core::SymbolRef, InlinedVector<core::NameRef, 1>> &blockMethodsCalledOnArguments =
-            methodsCalledOnArguments[bb->id];
-        UnorderedMap<core::SymbolRef, core::TypePtr> &blockArgRequirements = argTypesForBBToPass[bb->id];
+        UnorderedMap<core::NameRef, core::TypePtr> &blockArgRequirements = argTypesForBBToPass[bb->id];
 
         for (auto bbparent : bb->backEdges) {
             for (auto kv : localsStoringArguments[bbparent->id]) {
@@ -297,26 +170,16 @@ UnorderedMap<core::SymbolRef, core::TypePtr> guessArgumentTypes(core::Context ct
             if (bb->firstDeadInstructionIdx >= 0 && i >= bb->firstDeadInstructionIdx) {
                 break;
             }
-            InlinedVector<core::SymbolRef, 1> newInsert;
+            InlinedVector<core::NameRef, 1> newInsert;
 
             if (auto load = cfg::cast_instruction<cfg::LoadArg>(bind.value.get())) {
-                newInsert.emplace_back(load->arg);
+                newInsert.emplace_back(load->argument(ctx).name);
             } else if (auto ident = cfg::cast_instruction<cfg::Ident>(bind.value.get())) {
                 auto fnd = blockLocals.find(ident->what);
                 if (fnd != blockLocals.end()) {
                     newInsert.insert(newInsert.end(), fnd->second.begin(), fnd->second.end());
                 }
             } else if (auto snd = cfg::cast_instruction<cfg::Send>(bind.value.get())) {
-                // See if we can learn about what functions are expected to exist on arguments
-                auto fnd = blockLocals.find(snd->recv.variable);
-                if (fnd != blockLocals.end()) {
-                    for (auto &arg : fnd->second) {
-                        if (!absl::c_linear_search(blockMethodsCalledOnArguments[arg], snd->fun)) {
-                            blockMethodsCalledOnArguments[arg].push_back(snd->fun);
-                        }
-                    }
-                }
-
                 // see if we have at least a single call argument that is a method argument
                 bool shouldFindArgumentTypes = false;
                 for (auto &arg : snd->args) {
@@ -347,7 +210,7 @@ UnorderedMap<core::SymbolRef, core::TypePtr> guessArgumentTypes(core::Context ct
         changed = false;
         for (auto it = cfg->forwardsTopoSort.rbegin(); it != cfg->forwardsTopoSort.rend(); ++it) {
             cfg::BasicBlock *bb = *it;
-            UnorderedMap<core::SymbolRef, core::TypePtr> entryRequirements;
+            UnorderedMap<core::NameRef, core::TypePtr> entryRequirements;
             for (auto bbparent : bb->backEdges) {
                 if (bbparent->firstDeadInstructionIdx >= 0 && bb != cfg->deadBlock()) {
                     continue;
@@ -381,7 +244,7 @@ UnorderedMap<core::SymbolRef, core::TypePtr> guessArgumentTypes(core::Context ct
 
 core::SymbolRef closestOverridenMethod(core::Context ctx, core::SymbolRef enclosingClassSymbol, core::NameRef name) {
     auto enclosingClass = enclosingClassSymbol.data(ctx);
-    ENFORCE(enclosingClass->isClassLinearizationComputed(), "Should have been linearized by resolver");
+    ENFORCE(enclosingClass->isClassOrModuleLinearizationComputed(), "Should have been linearized by resolver");
 
     for (const auto &mixin : enclosingClass->mixins()) {
         auto mixinMethod = mixin.data(ctx)->findMember(ctx, name);
@@ -415,43 +278,21 @@ bool childNeedsOverride(core::Context ctx, core::SymbolRef childSymbol, core::Sy
         !parentSymbol.data(ctx)->loc().file().data(ctx).isRBI() &&
         // that isn't the constructor...
         childSymbol.data(ctx)->name != core::Names::initialize() &&
-        // and wasn't DSL synthesized (beause we can't change DSL'd sigs).
-        !parentSymbol.data(ctx)->isDSLSynthesized() &&
+        // and wasn't Rewriter synthesized (beause we can't change DSL'd sigs).
+        !parentSymbol.data(ctx)->isRewriterSynthesized() &&
         // It has a sig...
         parentSymbol.data(ctx)->resultType != nullptr &&
         //  that is either overridable...
         (parentSymbol.data(ctx)->isOverridable() ||
          // or override...
-         parentSymbol.data(ctx)->isOverride() ||
-         // or implementation.
-         parentSymbol.data(ctx)->isImplementation());
-}
-
-bool parentNeedsOverridable(core::Context ctx, core::SymbolRef childSymbol, core::SymbolRef parentSymbol) {
-    return
-        // We're overriding a method...
-        parentSymbol.exists() &&
-        // in a file which we can edit...
-        parentSymbol.data(ctx)->loc().file().exists() &&
-        // defined outside an RBI (because it might be codegen'd)...
-        !parentSymbol.data(ctx)->loc().file().data(ctx).isRBI() &&
-        // that isn't the constructor...
-        childSymbol.data(ctx)->name != core::Names::initialize() &&
-        // and wasn't DSL synthesized (beause we can't change DSL'd sigs)
-        !parentSymbol.data(ctx)->isDSLSynthesized() &&
-        // It it has a sig...
-        parentSymbol.data(ctx)->resultType != nullptr &&
-        // that is implementation...
-        parentSymbol.data(ctx)->isImplementation() &&
-        // and doesn't already have overridable.
-        !parentSymbol.data(ctx)->isOverridable();
-    // In all other cases, we wouldn't have put override on the child's sig.
+         parentSymbol.data(ctx)->isOverride());
 }
 
 } // namespace
 
-bool SigSuggestion::maybeSuggestSig(core::Context ctx, core::ErrorBuilder &e, unique_ptr<cfg::CFG> &cfg,
-                                    const core::TypePtr &methodReturnType, core::TypeConstraint &constr) {
+optional<core::AutocorrectSuggestion> SigSuggestion::maybeSuggestSig(core::Context ctx, unique_ptr<cfg::CFG> &cfg,
+                                                                     const core::TypePtr &methodReturnType,
+                                                                     core::TypeConstraint &constr) {
     core::SymbolRef methodSymbol = cfg->symbol;
 
     bool guessedSomethingUseful = false;
@@ -459,10 +300,16 @@ bool SigSuggestion::maybeSuggestSig(core::Context ctx, core::ErrorBuilder &e, un
         guessedSomethingUseful = true;
     }
 
+    auto lspQueryMatches = ctx.state.lspQuery.matchesSuggestSig(methodSymbol);
+    if (lspQueryMatches) {
+        // Even a sig with no useful types is still useful interactively (saves on typing)
+        guessedSomethingUseful = true;
+    }
+
     core::TypePtr guessedReturnType;
     if (!constr.isEmpty()) {
         if (!constr.solve(ctx)) {
-            return false;
+            return nullopt;
         }
 
         guessedReturnType = core::Types::widen(ctx, core::Types::instantiate(ctx, methodReturnType, constr));
@@ -471,22 +318,22 @@ bool SigSuggestion::maybeSuggestSig(core::Context ctx, core::ErrorBuilder &e, un
             guessedReturnType = core::Types::untypedUntracked();
         }
 
-        guessedSomethingUseful = guessedSomethingUseful || !guessedReturnType->isUntyped();
+        guessedSomethingUseful |= !guessedReturnType->isUntyped();
     } else {
         guessedReturnType = methodReturnType;
     }
 
-    auto isBadArg = [&](const core::SymbolRef &arg) -> bool {
+    auto isBadArg = [&](const core::ArgInfo &arg) -> bool {
         return
             // runtime does not support rest args and key-rest args
-            arg.data(ctx)->isRepeated() ||
+            arg.flags.isRepeated ||
 
             // sometimes variable does not have a name e.g. `def initialize (*)`
-            arg.data(ctx)->name.data(ctx)->shortName(ctx).empty();
+            arg.name.data(ctx)->shortName(ctx).empty();
     };
     bool hasBadArg = absl::c_any_of(methodSymbol.data(ctx)->arguments(), isBadArg);
     if (hasBadArg) {
-        return false;
+        return nullopt;
     }
 
     auto guessedArgumentTypes = guessArgumentTypes(ctx, methodSymbol, cfg);
@@ -502,31 +349,44 @@ bool SigSuggestion::maybeSuggestSig(core::Context ctx, core::ErrorBuilder &e, un
         }
 
         for (const auto &arg : closestMethod.data(ctx)->arguments()) {
-            auto argType = arg.data(ctx)->resultType;
-            if (argType && !argType->isUntyped()) {
-                guessedArgumentTypes[arg] = arg.data(ctx)->resultType;
+            if (arg.type && !arg.type->isUntyped()) {
+                guessedArgumentTypes[arg.name] = arg.type;
             }
         }
     }
 
     auto loc = methodSymbol.data(ctx)->loc();
-    // Sometimes the methodSymbol we're looking at has been synthesized by a DSL pass, so no 'def' exists in the source
+    // Sometimes the methodSymbol we're looking at has been synthesized by a Rewriter pass, so no 'def' exists in the
+    // source
     if (loc.file().data(ctx).source().substr(loc.beginPos(), 3) != "def") {
-        return false;
+        return nullopt;
     }
 
-    fmt::format_to(ss, "sig {{generated.");
+    fmt::format_to(ss, "sig {{");
 
     ENFORCE(!methodSymbol.data(ctx)->arguments().empty(), "There should always be at least one arg (the block arg).");
     bool onlyArgumentIsBlkArg = methodSymbol.data(ctx)->arguments().size() == 1 &&
-                                methodSymbol.data(ctx)->arguments()[0].data(ctx)->name == core::Names::blkArg();
+                                methodSymbol.data(ctx)->arguments()[0].isSyntheticBlockArgument();
+
+    if (methodSymbol.data(ctx)->name != core::Names::initialize()) {
+        // Only need override / implementation if the parent has a sig
+        if (closestMethod.exists() && closestMethod.data(ctx)->resultType != nullptr) {
+            if (closestMethod.data(ctx)->isAbstract() || childNeedsOverride(ctx, methodSymbol, closestMethod)) {
+                fmt::format_to(ss, "override.");
+            }
+        }
+    }
 
     if (!onlyArgumentIsBlkArg) {
         fmt::format_to(ss, "params(");
 
         bool first = true;
         for (auto &argSym : methodSymbol.data(ctx)->arguments()) {
-            if (argSym.data(ctx)->name == core::Names::blkArg()) {
+            // WARNING: This is doing raw string equality--don't cargo cult this!
+            // You almost certainly want to compare NameRef's for equality instead.
+            // We need to compare strings here because we're running with a frozen global state
+            // (and thus can't take the string that we get from `argumentName` and enter it as a name).
+            if (argSym.argumentName(ctx) == core::Names::blkArg().data(ctx)->shortName(ctx)) {
                 // Never write "<blk>: ..." in the params of a generated sig, because this doesn't parse.
                 // (We add a block argument to every method if it doesn't mention one.)
                 continue;
@@ -535,10 +395,10 @@ bool SigSuggestion::maybeSuggestSig(core::Context ctx, core::ErrorBuilder &e, un
                 fmt::format_to(ss, ", ");
             }
             first = false;
-            auto argType = guessedArgumentTypes[argSym];
+            auto argType = guessedArgumentTypes[argSym.name];
             core::TypePtr chosenType;
 
-            auto oldType = argSym.data(ctx)->resultType;
+            auto oldType = argSym.type;
             if (!oldType || oldType->isUntyped()) {
                 if (!argType || argType->isBottom()) {
                     chosenType = core::Types::untypedUntracked();
@@ -551,26 +411,15 @@ bool SigSuggestion::maybeSuggestSig(core::Context ctx, core::ErrorBuilder &e, un
                 chosenType = oldType;
             }
             if (!ctx.state.suggestRuntimeProfiledType || !chosenType->isUntyped()) {
-                fmt::format_to(ss, "{}: {}", argSym.data(ctx)->argumentName(ctx), chosenType->show(ctx));
+                fmt::format_to(ss, "{}: {}", argSym.argumentName(ctx), chosenType->show(ctx));
             } else {
-                fmt::format_to(ss, "{}: ::T::Utils::RuntimeProfiled", argSym.data(ctx)->argumentName(ctx));
+                fmt::format_to(ss, "{}: ::T::Utils::RuntimeProfiled", argSym.argumentName(ctx));
             }
         }
         fmt::format_to(ss, ").");
     }
     if (!guessedSomethingUseful) {
-        return false;
-    }
-
-    if (methodSymbol.data(ctx)->name != core::Names::initialize()) {
-        // Only need override / implementation if the parent has a sig
-        if (closestMethod.exists() && closestMethod.data(ctx)->resultType != nullptr) {
-            if (closestMethod.data(ctx)->isAbstract()) {
-                fmt::format_to(ss, "implementation.");
-            } else if (childNeedsOverride(ctx, methodSymbol, closestMethod)) {
-                fmt::format_to(ss, "override.");
-            }
-        }
+        return nullopt;
     }
 
     bool suggestsVoid = methodSymbol.data(ctx)->name == core::Names::initialize() ||
@@ -585,45 +434,34 @@ bool SigSuggestion::maybeSuggestSig(core::Context ctx, core::ErrorBuilder &e, un
         fmt::format_to(ss, "returns({})}}", guessedReturnType->show(ctx));
     }
 
-    auto [replacementLoc, padding] = findStartOfLine(ctx, loc);
+    auto [replacementLoc, padding] = loc.findStartOfLine(ctx);
     string spaces(padding, ' ');
     bool hasExistingSig = methodSymbol.data(ctx)->resultType != nullptr;
 
     if (!loc.file().exists()) {
-        return false;
-    }
-
-    if (hasExistingSig && !methodSymbol.data(ctx)->hasGeneratedSig()) {
-        return false;
+        return nullopt;
     }
 
     if (hasExistingSig) {
-        if (auto existingStart = startOfExistingSig(ctx, loc)) {
-            replacementLoc = core::Loc(loc.file(), *existingStart, replacementLoc.endPos());
-        } else {
-            // Had existing sig, but couldn't find where it started, so give up suggesting a sig.
-            return false;
-        }
+        return nullopt;
     }
 
-    e.addAutocorrect(core::AutocorrectSuggestion(replacementLoc, fmt::format("{}\n{}", to_string(ss), spaces)));
+    vector<core::AutocorrectSuggestion::Edit> edits;
 
-    if (parentNeedsOverridable(ctx, methodSymbol, closestMethod)) {
-        if (auto maybeOffset = startOfExistingReturn(ctx, closestMethod.data(ctx)->loc())) {
-            auto offset = *maybeOffset;
-            core::Loc overridableReturnLoc(closestMethod.data(ctx)->loc().file(), offset, offset);
-            if (closestMethod.data(ctx)->hasGeneratedSig()) {
-                e.addAutocorrect(core::AutocorrectSuggestion(overridableReturnLoc, "overridable."));
-            } else {
-                e.addAutocorrect(core::AutocorrectSuggestion(overridableReturnLoc, "generated.overridable."));
-            }
-        }
+    auto sig = to_string(ss);
+    auto replacementContents = fmt::format("{}\n{}", sig, spaces);
+    edits.emplace_back(core::AutocorrectSuggestion::Edit{replacementLoc, replacementContents});
+
+    if (lspQueryMatches) {
+        core::lsp::QueryResponse::pushQueryResponse(
+            ctx, core::lsp::EditResponse(replacementLoc, std::move(replacementContents)));
     }
 
-    if (auto suggestion = maybeSuggestExtendTHelpers(ctx, methodSymbol)) {
-        e.addAutocorrect(std::move(*suggestion));
+    if (auto edit = maybeSuggestExtendTSig(ctx, methodSymbol)) {
+        edits.emplace_back(edit.value());
     }
-    return true;
+
+    return core::AutocorrectSuggestion{fmt::format("Add `{}`", sig), edits};
 }
 
 } // namespace sorbet::infer

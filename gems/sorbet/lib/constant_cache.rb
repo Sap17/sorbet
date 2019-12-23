@@ -2,6 +2,7 @@
 # typed: true
 
 require_relative './real_stdlib'
+require_relative './status'
 
 # This class walks global namespace to find all modules and discover all of their names.
 # At the time you ask for it it, it takes a "spashot" of the world.
@@ -50,11 +51,24 @@ class Sorbet::Private::ConstantLookupCache
     'Sequel::UnbindDuplicate',
     'Sequel::Unbinder',
     'YARD::Parser::Ruby::Legacy::RipperParser',
+    'Java::ComHeadiusRacc::Cparse::CparseParams::NEVER',
+    'Java::ComHeadiusRacc::Cparse::CparseParams::UNDEF',
+    'Java::ComHeadiusRacc::Cparse::Parser::NEVER',
+    'Java::ComHeadiusRacc::Cparse::Parser::UNDEF',
+    'Java::OrgJruby::RubyBasicObject::NEVER',
+    'Java::OrgJruby::RubyBasicObject::UNDEF',
+    'Java::OrgJruby::RubyClass::NEVER',
+    'Java::OrgJruby::RubyClass::UNDEF',
+    'Java::OrgJruby::RubyModule::NEVER',
+    'Java::OrgJruby::RubyModule::UNDEF',
+    'Java::OrgJruby::RubyObject::NEVER',
+    'Java::OrgJruby::RubyObject::UNDEF',
   ].freeze
 
   def initialize
     @all_constants = {}
     dfs_module(Object, nil, @all_constants, nil)
+    Sorbet::Private::Status.done
     @consts_by_name = {}
     @all_constants.each_value do |struct|
       fill_primary_name(struct)
@@ -97,7 +111,10 @@ class Sorbet::Private::ConstantLookupCache
   end
 
   private def dfs_module(mod, prefix, ret, owner)
-    raise "error #{prefix}: #{mod} is not a module" if !mod.is_a?(Module)
+    raise "error #{prefix}: #{mod} is not a module" if !Sorbet::Private::RealStdlib.real_is_a?(mod, Module)
+    name = Sorbet::Private::RealStdlib.real_name(mod)
+    Sorbet::Private::Status.say("Naming #{name}", print_without_tty: false)
+    return if name == 'RSpec::ExampleGroups' # These are all anonymous classes and will be quadratic in the number of classes to name them. We also know they don't have any hidden definitions
     begin
       constants = Sorbet::Private::RealStdlib.real_constants(mod)
     rescue TypeError
@@ -107,7 +124,7 @@ class Sorbet::Private::ConstantLookupCache
     go_deeper = [] # make this a bfs to prefer shorter names
     constants.each do |nested|
       begin
-        next if mod.autoload?(nested) # some constants aren't autoloaded even after require_everything, e.g. StateMachine::Graph
+        next if Sorbet::Private::RealStdlib.real_autoload?(mod, nested) # some constants aren't autoloaded even after require_everything, e.g. StateMachine::Graph
 
         begin
           next if DEPRECATED_CONSTANTS.include?("#{prefix}::#{nested}") # avoid stdout spew
@@ -117,12 +134,12 @@ class Sorbet::Private::ConstantLookupCache
         end
 
         begin
-          nested_constant = mod.const_get(nested, false) # rubocop:disable PrisonGuard/NoDynamicConstAccess
-        rescue LoadError
-          puts "Failed to load #{mod.name}::#{nested}"
+          nested_constant = Sorbet::Private::RealStdlib.real_const_get(mod, nested, false) # rubocop:disable PrisonGuard/NoDynamicConstAccess
+        rescue LoadError => err
+          puts "Got #{err.class} when trying to get nested name #{name}::#{nested}"
           next
-        rescue NameError
-          puts "Failed to load #{mod.name}::#{nested}"
+        rescue NameError, ArgumentError => err
+          puts "Got #{err.class} when trying to get nested name #{name}::#{nested}_"
           # some stuff fails to load, like
           # `const_get': uninitialized constant YARD::Parser::Ruby::Legacy::RipperParser (NameError)
           # Did you mean?  YARD::Parser::Ruby::Legacy::RipperParser
@@ -167,7 +184,10 @@ class Sorbet::Private::ConstantLookupCache
       entry = ConstantEntry.new(const_name.to_sym, name, name, [name], ancestor, nil)
       ret[object_id] = entry
     end
-    go_deeper.each do |entry, nested_constant, nested_name|
+    sorted_deeper = go_deeper.sort_by do |entry, nested_constant, nested_name|
+      Sorbet::Private::RealStdlib.real_name(nested_constant)
+    end
+    sorted_deeper.each do |entry, nested_constant, nested_name|
       dfs_module(nested_constant, nested_name, ret, entry)
     end
     nil

@@ -1,6 +1,7 @@
 #include "absl/base/casts.h"
 #include "absl/strings/escaping.h"
 #include "common/common.h"
+#include "common/formatting.h"
 #include "core/Context.h"
 #include "core/Names.h"
 #include "core/Symbols.h"
@@ -36,6 +37,15 @@ string UnresolvedClassType::show(const GlobalState &gs) const {
     return fmt::format(
         "{}::{} (unresolved)", this->scope.data(gs)->show(gs),
         fmt::map_join(this->names, "::", [&](const auto &el) -> string { return el.data(gs)->show(gs); }));
+}
+
+string UnresolvedAppliedType::toStringWithTabs(const GlobalState &gs, int tabs) const {
+    return this->show(gs);
+}
+
+string UnresolvedAppliedType::show(const GlobalState &gs) const {
+    return fmt::format("{}[{}] (unresolved)", this->klass.data(gs)->show(gs),
+                       fmt::map_join(targs, ", ", [&](auto targ) { return targ->show(gs); }));
 }
 
 string LiteralType::toStringWithTabs(const GlobalState &gs, int tabs) const {
@@ -82,6 +92,10 @@ string TupleType::toStringWithTabs(const GlobalState &gs, int tabs) const {
 string TupleType::show(const GlobalState &gs) const {
     return fmt::format("[{}]",
                        fmt::map_join(this->elems, ", ", [&](const auto &el) -> string { return el->show(gs); }));
+}
+
+string TupleType::showWithMoreInfo(const GlobalState &gs) const {
+    return fmt::format("{} ({}-tuple)", show(gs), this->elems.size());
 }
 
 string ShapeType::toStringWithTabs(const GlobalState &gs, int tabs) const {
@@ -153,35 +167,133 @@ string OrType::toStringWithTabs(const GlobalState &gs, int tabs) const {
                        rightBrace ? ")" : "");
 }
 
-string showOrs(const GlobalState &gs, TypePtr left, TypePtr right) {
-    auto *lt = cast_type<OrType>(left.get());
-    auto *rt = cast_type<OrType>(right.get());
-    return fmt::format("{}, {}", lt != nullptr ? showOrs(gs, lt->left, lt->right) : left->show(gs),
-                       rt != nullptr ? showOrs(gs, rt->left, rt->right) : right->show(gs));
+/**
+ * Metadata collected while traversing OrType for pretty-printing.
+ */
+struct OrInfo {
+    /// True when the leaves of the OrType contains a NilClass.
+    bool containsNil{false};
+
+    /// True when the leaves of the OrType contains a FalseClass.
+    bool containsFalse{false};
+
+    /// True when the leaves of the OrType contains a TrueClass.
+    bool containsTrue{false};
+
+    /// True when the leaves of the OrType contains a type that is none of the
+    /// obove cases is present (Integer, for example).
+    bool containsOther{false};
+
+    /// True when there are more than one non-NilClass types present in the
+    /// leaves of the OrTYpe.
+    bool containsMultiple{false};
+
+    bool isBoolean() const {
+        return containsTrue && containsFalse && !containsOther;
+    }
+
+    void markContainsMultiple() {
+        this->containsMultiple = true;
+    }
+
+    OrInfo() {}
+
+    static OrInfo nilInfo() {
+        OrInfo res;
+        res.containsNil = true;
+        return res;
+    }
+
+    static OrInfo trueInfo() {
+        OrInfo res;
+        res.containsTrue = true;
+        return res;
+    }
+
+    static OrInfo falseInfo() {
+        OrInfo res;
+        res.containsFalse = true;
+        return res;
+    }
+
+    static OrInfo otherInfo() {
+        OrInfo res;
+        res.containsOther = true;
+        return res;
+    }
+
+    static OrInfo merge(const OrInfo &left, const OrInfo &right) {
+        OrInfo res;
+        res.containsNil = left.containsNil || right.containsNil;
+        res.containsFalse = left.containsFalse || right.containsFalse;
+        res.containsTrue = left.containsTrue || right.containsTrue;
+        res.containsOther = left.containsOther || right.containsOther;
+        res.containsMultiple = left.containsMultiple || right.containsMultiple;
+        return res;
+    }
+};
+
+pair<OrInfo, optional<string>> showOrs(const GlobalState &, TypePtr, TypePtr);
+
+pair<OrInfo, optional<string>> showOrElem(const GlobalState &gs, TypePtr ty) {
+    if (auto classType = cast_type<ClassType>(ty.get())) {
+        if (classType->symbol == Symbols::NilClass()) {
+            return make_pair(OrInfo::nilInfo(), nullopt);
+        } else if (classType->symbol == Symbols::TrueClass()) {
+            return make_pair(OrInfo::trueInfo(), make_optional(classType->show(gs)));
+        } else if (classType->symbol == Symbols::FalseClass()) {
+            return make_pair(OrInfo::falseInfo(), make_optional(classType->show(gs)));
+        }
+    } else if (auto orType = cast_type<OrType>(ty.get())) {
+        return showOrs(gs, orType->left, orType->right);
+    }
+
+    return make_pair(OrInfo::otherInfo(), make_optional(ty->show(gs)));
 }
 
-string showOrSpecialCase(const GlobalState &gs, TypePtr type, TypePtr rest) {
-    auto *ct = cast_type<ClassType>(type.get());
-    if (ct != nullptr && ct->symbol == Symbols::NilClass()) {
-        return fmt::format("T.nilable({})", rest->show(gs));
+pair<OrInfo, optional<string>> showOrs(const GlobalState &gs, TypePtr left, TypePtr right) {
+    auto [leftInfo, leftStr] = showOrElem(gs, left);
+    auto [rightInfo, rightStr] = showOrElem(gs, right);
+
+    OrInfo merged = OrInfo::merge(leftInfo, rightInfo);
+
+    if (leftStr.has_value() && rightStr.has_value()) {
+        merged.markContainsMultiple();
+        return make_pair(merged, make_optional(fmt::format("{}, {}", *leftStr, *rightStr)));
+    } else if (leftStr.has_value()) {
+        return make_pair(merged, leftStr);
+    } else {
+        return make_pair(merged, rightStr);
     }
-    return "";
 }
 
 string OrType::show(const GlobalState &gs) const {
-    string ret;
-    if (!(ret = showOrSpecialCase(gs, this->left, this->right)).empty()) {
-        return ret;
-    }
-    if (!(ret = showOrSpecialCase(gs, this->right, this->left)).empty()) {
-        return ret;
+    auto [info, str] = showOrs(gs, this->left, this->right);
+
+    // If str is empty at this point, all of the types present in the flattened
+    // OrType are NilClass.
+    if (!str.has_value()) {
+        return Symbols::NilClass().show(gs);
     }
 
-    return fmt::format("T.any({})", showOrs(gs, this->left, this->right));
+    string res;
+    if (info.isBoolean()) {
+        res = "T::Boolean";
+    } else if (info.containsMultiple) {
+        res = fmt::format("T.any({})", *str);
+    } else {
+        res = *str;
+    }
+
+    if (info.containsNil) {
+        return fmt::format("T.nilable({})", res);
+    } else {
+        return res;
+    }
 }
 
 string TypeVar::toStringWithTabs(const GlobalState &gs, int tabs) const {
-    return fmt::format("TypeVar({})", sym.data(gs)->name.toString(gs));
+    return fmt::format("TypeVar({})", sym.data(gs)->name.showRaw(gs));
 }
 
 string TypeVar::show(const GlobalState &gs) const {
@@ -201,7 +313,7 @@ string AppliedType::toStringWithTabs(const GlobalState &gs, int tabs) const {
         ++i;
         if (i < this->klass.data(gs)->typeMembers().size()) {
             auto tyMem = this->klass.data(gs)->typeMembers()[i];
-            fmt::format_to(buf, "{}{} = {}\n", twiceNestedTabs, tyMem.data(gs)->name.toString(gs),
+            fmt::format_to(buf, "{}{} = {}\n", twiceNestedTabs, tyMem.data(gs)->name.showRaw(gs),
                            targ->toStringWithTabs(gs, tabs + 3));
         } else {
             // this happens if we try to print type before resolver has processed stdlib
@@ -221,6 +333,8 @@ string AppliedType::show(const GlobalState &gs) const {
         fmt::format_to(buf, "T::Hash");
     } else if (this->klass == Symbols::Enumerable()) {
         fmt::format_to(buf, "T::Enumerable");
+    } else if (this->klass == Symbols::Enumerator()) {
+        fmt::format_to(buf, "T::Enumerator");
     } else if (this->klass == Symbols::Range()) {
         fmt::format_to(buf, "T::Range");
     } else if (this->klass == Symbols::Set()) {
@@ -251,7 +365,11 @@ string AppliedType::show(const GlobalState &gs) const {
                 fmt::format_to(buf, ")");
             }
 
-            fmt::format_to(buf, ".returns({})", return_type->show(gs));
+            if (return_type == core::Types::void_()) {
+                fmt::format_to(buf, ".void");
+            } else {
+                fmt::format_to(buf, ".returns({})", return_type->show(gs));
+            }
             return to_string(buf);
         } else {
             fmt::format_to(buf, "{}", this->klass.data(gs)->show(gs));
@@ -265,6 +383,8 @@ string AppliedType::show(const GlobalState &gs) const {
     auto it = targs.begin();
     for (auto typeMember : typeMembers) {
         if (typeMember.data(gs)->isFixed()) {
+            it = targs.erase(it);
+        } else if (typeMember.data(gs)->name == core::Names::Constants::AttachedClass()) {
             it = targs.erase(it);
         } else if (this->klass == Symbols::Hash() && typeMember == typeMembers.back()) {
             it = targs.erase(it);
@@ -280,7 +400,14 @@ string AppliedType::show(const GlobalState &gs) const {
 }
 
 string LambdaParam::toStringWithTabs(const GlobalState &gs, int tabs) const {
-    return fmt::format("LambdaParam({})", this->definition.data(gs)->toStringFullName(gs));
+    auto defName = this->definition.data(gs)->toStringFullName(gs);
+    auto upperStr = this->upperBound->toString(gs);
+    if (this->definition.data(gs)->isFixed()) {
+        return fmt::format("LambdaParam({}, fixed={})", defName, upperStr);
+    } else {
+        auto lowerStr = this->lowerBound->toString(gs);
+        return fmt::format("LambdaParam({}, lower={}, upper={})", defName, lowerStr, upperStr);
+    }
 }
 
 string LambdaParam::show(const GlobalState &gs) const {
@@ -313,6 +440,10 @@ string TypeVar::typeName() const {
 
 string UnresolvedClassType::typeName() const {
     return "UnresolvedClassType";
+}
+
+string UnresolvedAppliedType::typeName() const {
+    return "UnresolvedAppliedType";
 }
 
 string ClassType::typeName() const {

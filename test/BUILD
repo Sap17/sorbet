@@ -1,5 +1,5 @@
 cc_binary(
-    name = "test_corpus_sharded",
+    name = "test_corpus_runner",
     testonly = 1,
     srcs = [
         "LSPTest.cc",
@@ -18,16 +18,37 @@ cc_binary(
         "//cfg",
         "//cfg/builder",
         "//core",
-        "//dsl",
+        "//definition_validator",
+        "//flattener",
         "//infer",
+        "//local_vars",
         "//main/autogen",
         "//main/lsp",
         "//namer",
-        "//payload:light",
+        "//payload",
         "//resolver",
+        "//rewriter",
         "//test/helpers",
         "@com_google_googletest//:gtest",
         "@cxxopts",
+    ],
+)
+
+cc_binary(
+    name = "print_document_symbols",
+    testonly = 1,
+    srcs = [
+        "print_document_symbols.cc",
+    ],
+    linkstatic = select({
+        "//tools/config:linkshared": 0,
+        "//conditions:default": 1,
+    }),
+    visibility = ["//tools:__pkg__"],
+    deps = [
+        "//main/lsp",
+        "//payload",
+        "//test/helpers",
     ],
 )
 
@@ -48,7 +69,7 @@ cc_test(
         "//core",
         "//core/serialize",
         "//parser",
-        "//payload:light",
+        "//payload",
         "@com_google_googletest//:gtest",
         "@com_google_googletest//:gtest_main",
         "@cxxopts",
@@ -126,7 +147,8 @@ cc_binary(
 
 load(":pipeline_test.bzl", "pipeline_tests")
 
-test_corpus_tests = pipeline_tests(
+pipeline_tests(
+    "test_corpus",
     glob([
         "testdata/**/*.rb",
         "testdata/**/*.exp",
@@ -136,7 +158,18 @@ test_corpus_tests = pipeline_tests(
     filter = "PosTests",
 )
 
-test_corpus_lsp_tests = pipeline_tests(
+pipeline_tests(
+    "whitequark_parser_corpus",
+    glob([
+        "whitequark/**/*.rb",
+        "whitequark/**/*.exp",
+    ]),
+    "WhitequarkParserTests",
+    filter = "WhitequarkParserTests",
+)
+
+pipeline_tests(
+    "test_corpus_lsp",
     glob([
         "testdata/**/*.rb",
         "testdata/**/*.exp",
@@ -147,16 +180,11 @@ test_corpus_lsp_tests = pipeline_tests(
 )
 
 test_suite(
-    name = "test_corpus",
-    tests = test_corpus_tests,
-)
-
-test_suite(
-    name = "test_corpus_lsp",
-    tests = test_corpus_lsp_tests,
-)
-
-test_suite(
     name = "test",
     tests = ["test_corpus"],
+)
+
+test_suite(
+    name = "whitequark_parser_tests",
+    tests = ["whitequark_parser_corpus"],
 )
